@@ -16,6 +16,8 @@ pub enum ChainError {
     StoreError(#[from] StoreError),
     #[error("EVM error: {0}")]
     EvmError(#[from] EvmError),
+    #[error("Mempool error: {0}")]
+    MempoolError(#[from] MempoolError),
     #[error("{0}")]
     Custom(String),
 }
@@ -72,6 +74,8 @@ pub enum MempoolError {
     NotEnoughBalance,
     #[error("Transaction gas fields are invalid")]
     InvalidTxGasvalues,
+    #[error("{0}")]
+    Custom(String),
 }
 
 #[derive(Debug)]

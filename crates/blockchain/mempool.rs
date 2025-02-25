@@ -7,6 +7,7 @@ use crate::{
         TX_DATA_ZERO_GAS_COST, TX_GAS_COST, TX_INIT_CODE_WORD_GAS_COST,
     },
     error::MempoolError,
+    Blockchain,
 };
 use ethrex_common::{
     constants::MIN_BASE_FEE_PER_BLOB_GAS,
@@ -15,14 +16,14 @@ use ethrex_common::{
     },
     Address, H256, U256,
 };
-use ethrex_storage::{error::StoreError, Store};
+use ethrex_storage::Store;
 
 /// Add a blob transaction and its blobs bundle to the mempool
 #[cfg(feature = "c-kzg")]
 pub fn add_blob_transaction(
     transaction: EIP4844Transaction,
     blobs_bundle: BlobsBundle,
-    store: &Store,
+    blockchain: &Blockchain,
 ) -> Result<H256, MempoolError> {
     // Validate blobs bundle
     blobs_bundle.validate(&transaction)?;
@@ -31,44 +32,50 @@ pub fn add_blob_transaction(
     let sender = transaction.sender();
 
     // Validate transaction
-    validate_transaction(&transaction, sender, store.clone())?;
+    validate_transaction(&transaction, sender, &blockchain.storage)?;
 
     // Add transaction and blobs bundle to storage
     let hash = transaction.compute_hash();
-    store.add_transaction_to_pool(hash, MempoolTransaction::new(transaction, sender))?;
-    store.add_blobs_bundle_to_pool(hash, blobs_bundle)?;
+    blockchain.add_transaction_to_pool(hash, MempoolTransaction::new(transaction, sender))?;
+    blockchain.add_blobs_bundle_to_pool(hash, blobs_bundle)?;
     Ok(hash)
 }
 
 /// Add a transaction to the mempool
-pub fn add_transaction(transaction: Transaction, store: &Store) -> Result<H256, MempoolError> {
+pub fn add_transaction(
+    transaction: Transaction,
+    blockchain: &Blockchain,
+) -> Result<H256, MempoolError> {
     // Blob transactions should be submitted via add_blob_transaction along with the corresponding blobs bundle
     if matches!(transaction, Transaction::EIP4844Transaction(_)) {
         return Err(MempoolError::BlobTxNoBlobsBundle);
     }
     let sender = transaction.sender();
     // Validate transaction
-    validate_transaction(&transaction, sender, store.clone())?;
+    validate_transaction(&transaction, sender, &blockchain.storage)?;
 
     let hash = transaction.compute_hash();
 
     // Add transaction to storage
-    store.add_transaction_to_pool(hash, MempoolTransaction::new(transaction, sender))?;
+    blockchain.add_transaction_to_pool(hash, MempoolTransaction::new(transaction, sender))?;
 
     Ok(hash)
 }
 
 /// Fetch a blobs bundle from the mempool given its blob transaction hash
-pub fn get_blobs_bundle(tx_hash: H256, store: Store) -> Result<Option<BlobsBundle>, MempoolError> {
-    Ok(store.get_blobs_bundle_from_pool(tx_hash)?)
+pub fn get_blobs_bundle(
+    tx_hash: H256,
+    blockchain: &Blockchain,
+) -> Result<Option<BlobsBundle>, MempoolError> {
+    Ok(blockchain.get_blobs_bundle_from_pool(tx_hash)?)
 }
 
 /// Applies the filter and returns a set of suitable transactions from the mempool.
 /// These transactions will be grouped by sender and sorted by nonce
 pub fn filter_transactions(
     filter: &PendingTxFilter,
-    store: &Store,
-) -> Result<HashMap<Address, Vec<MempoolTransaction>>, StoreError> {
+    blockchain: &Blockchain,
+) -> Result<HashMap<Address, Vec<MempoolTransaction>>, MempoolError> {
     let filter_tx = |tx: &Transaction| -> bool {
         // Filter by tx type
         let is_blob_tx = matches!(tx, Transaction::EIP4844Transaction(_));
@@ -99,15 +106,15 @@ pub fn filter_transactions(
         }
         true
     };
-    store.filter_pool_transactions(&filter_tx)
+    blockchain.filter_pool_transactions(&filter_tx)
 }
 
 /// Remove a transaction from the mempool
-pub fn remove_transaction(hash: &H256, store: &Store) -> Result<(), StoreError> {
-    store.remove_transaction_from_pool(hash)
+pub fn remove_transaction(hash: &H256, blockchain: &Blockchain) -> Result<(), MempoolError> {
+    blockchain.remove_transaction_from_pool(hash)
 }
 
-pub fn get_nonce(address: &Address, store: &Store) -> Result<Option<u64>, MempoolError> {
+pub fn get_nonce(address: &Address, blockchain: &Blockchain) -> Result<Option<u64>, MempoolError> {
     let pending_filter = PendingTxFilter {
         min_tip: None,
         base_fee: None,
@@ -116,7 +123,7 @@ pub fn get_nonce(address: &Address, store: &Store) -> Result<Option<u64>, Mempoo
         only_blob_txs: false,
     };
 
-    let pending_txs = filter_transactions(&pending_filter, store)?;
+    let pending_txs = filter_transactions(&pending_filter, blockchain)?;
     let nonce = match pending_txs.get(address) {
         Some(txs) => txs.last().map(|tx| tx.nonce() + 1),
         None => None,
@@ -169,7 +176,7 @@ Stateful validations
 fn validate_transaction(
     tx: &Transaction,
     sender: Address,
-    store: Store,
+    store: &Store,
 ) -> Result<(), MempoolError> {
     // TODO: Add validations here
 
@@ -302,12 +309,13 @@ fn transaction_intrinsic_gas(
 }
 #[cfg(test)]
 mod tests {
-    use crate::error::MempoolError;
+    use crate::error::{ChainError, MempoolError};
     use crate::mempool::{
         MAX_INITCODE_SIZE, TX_ACCESS_LIST_ADDRESS_GAS, TX_ACCESS_LIST_STORAGE_KEY_GAS,
         TX_CREATE_GAS_COST, TX_DATA_NON_ZERO_GAS, TX_DATA_NON_ZERO_GAS_EIP2028,
         TX_DATA_ZERO_GAS_COST, TX_GAS_COST, TX_INIT_CODE_WORD_GAS_COST,
     };
+    use crate::Blockchain;
 
     use super::{transaction_intrinsic_gas, validate_transaction};
     use ethrex_common::types::{
@@ -315,9 +323,12 @@ mod tests {
     };
     use ethrex_common::{Address, Bytes, H256, U256};
     use ethrex_storage::EngineType;
-    use ethrex_storage::{error::StoreError, Store};
+    use ethrex_storage::Store;
 
-    fn setup_storage(config: ChainConfig, header: BlockHeader) -> Result<Store, StoreError> {
+    fn setup_blockchain(
+        config: ChainConfig,
+        header: BlockHeader,
+    ) -> Result<Blockchain, ChainError> {
         let store = Store::new("test", EngineType::InMemory)?;
         let block_number = header.number;
         let block_hash = header.compute_block_hash();
@@ -326,7 +337,9 @@ mod tests {
         store.update_latest_block_number(block_number)?;
         store.set_chain_config(&config)?;
 
-        Ok(store)
+        let blockchain = Blockchain::default_with_store(store);
+
+        Ok(blockchain)
     }
 
     fn build_basic_config_and_header(
@@ -531,7 +544,7 @@ mod tests {
     fn transaction_with_big_init_code_in_shanghai_fails() {
         let (config, header) = build_basic_config_and_header(false, true);
 
-        let store = setup_storage(config, header).expect("Storage setup");
+        let blockchain = setup_blockchain(config, header).expect("Storage setup");
 
         let tx = EIP1559Transaction {
             nonce: 3,
@@ -546,7 +559,7 @@ mod tests {
         };
 
         let tx = Transaction::EIP1559Transaction(tx);
-        let validation = validate_transaction(&tx, Address::random(), store);
+        let validation = validate_transaction(&tx, Address::random(), &blockchain.storage);
         assert!(matches!(
             validation,
             Err(MempoolError::TxMaxInitCodeSizeError)
@@ -557,7 +570,7 @@ mod tests {
     fn transaction_with_gas_limit_higher_than_of_the_block_should_fail() {
         let (config, header) = build_basic_config_and_header(false, false);
 
-        let store = setup_storage(config, header).expect("Storage setup");
+        let blockchain = setup_blockchain(config, header).expect("Storage setup");
 
         let tx = EIP1559Transaction {
             nonce: 3,
@@ -572,7 +585,7 @@ mod tests {
         };
 
         let tx = Transaction::EIP1559Transaction(tx);
-        let validation = validate_transaction(&tx, Address::random(), store);
+        let validation = validate_transaction(&tx, Address::random(), &blockchain.storage);
         assert!(matches!(
             validation,
             Err(MempoolError::TxGasLimitExceededError)
@@ -583,7 +596,7 @@ mod tests {
     fn transaction_with_priority_fee_higher_than_gas_fee_should_fail() {
         let (config, header) = build_basic_config_and_header(false, false);
 
-        let store = setup_storage(config, header).expect("Storage setup");
+        let blockchain = setup_blockchain(config, header).expect("Storage setup");
 
         let tx = EIP1559Transaction {
             nonce: 3,
@@ -598,7 +611,7 @@ mod tests {
         };
 
         let tx = Transaction::EIP1559Transaction(tx);
-        let validation = validate_transaction(&tx, Address::random(), store);
+        let validation = validate_transaction(&tx, Address::random(), &blockchain.storage);
         assert!(matches!(
             validation,
             Err(MempoolError::TxTipAboveFeeCapError)
@@ -608,7 +621,7 @@ mod tests {
     #[test]
     fn transaction_with_gas_limit_lower_than_intrinsic_gas_should_fail() {
         let (config, header) = build_basic_config_and_header(false, false);
-        let store = setup_storage(config, header).expect("Storage setup");
+        let blockchain = setup_blockchain(config, header).expect("Storage setup");
 
         let intrinsic_gas_cost = TX_GAS_COST;
 
@@ -625,7 +638,7 @@ mod tests {
         };
 
         let tx = Transaction::EIP1559Transaction(tx);
-        let validation = validate_transaction(&tx, Address::random(), store);
+        let validation = validate_transaction(&tx, Address::random(), &blockchain.storage);
         assert!(matches!(
             validation,
             Err(MempoolError::TxIntrinsicGasCostAboveLimitError)
@@ -635,7 +648,7 @@ mod tests {
     #[test]
     fn transaction_with_blob_base_fee_below_min_should_fail() {
         let (config, header) = build_basic_config_and_header(false, false);
-        let store = setup_storage(config, header).expect("Storage setup");
+        let blockchain = setup_blockchain(config, header).expect("Storage setup");
 
         let tx = EIP4844Transaction {
             nonce: 3,
@@ -651,7 +664,7 @@ mod tests {
         };
 
         let tx = Transaction::EIP4844Transaction(tx);
-        let validation = validate_transaction(&tx, Address::random(), store);
+        let validation = validate_transaction(&tx, Address::random(), &blockchain.storage);
         assert!(matches!(
             validation,
             Err(MempoolError::TxBlobBaseFeeTooLowError)

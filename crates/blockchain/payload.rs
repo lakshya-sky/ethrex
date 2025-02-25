@@ -321,18 +321,15 @@ impl Blockchain {
             only_blob_txs: true,
             ..tx_filter
         };
-        let store = context.store().ok_or(StoreError::Custom(
-            "no store in the context (is an ExecutionDB being used?)".to_string(),
-        ))?;
         Ok((
             // Plain txs
             TransactionQueue::new(
-                mempool::filter_transactions(&plain_tx_filter, store)?,
+                mempool::filter_transactions(&plain_tx_filter, self)?,
                 context.base_fee_per_gas(),
             )?,
             // Blob txs
             TransactionQueue::new(
-                mempool::filter_transactions(&blob_tx_filter, store)?,
+                mempool::filter_transactions(&blob_tx_filter, self)?,
                 context.base_fee_per_gas(),
             )?,
         ))
@@ -391,18 +388,13 @@ impl Blockchain {
             // TODO: maybe fetch hash too when filtering mempool so we don't have to compute it here (we can do this in the same refactor as adding timestamp)
             let tx_hash = head_tx.tx.compute_hash();
 
-            // Check wether the tx is replay-protected
+            // Check whether the tx is replay-protected
             if head_tx.tx.protected() && !chain_config.is_eip155_activated(context.block_number()) {
                 // Ignore replay protected tx & all txs from the sender
                 // Pull transaction from the mempool
                 debug!("Ignoring replay-protected transaction: {}", tx_hash);
                 txs.pop();
-                mempool::remove_transaction(
-                    &head_tx.tx.compute_hash(),
-                    context
-                        .store()
-                        .ok_or(ChainError::StoreError(StoreError::MissingStore))?,
-                )?;
+                mempool::remove_transaction(&head_tx.tx.compute_hash(), self)?;
                 continue;
             }
 
@@ -416,12 +408,7 @@ impl Blockchain {
                 Ok(receipt) => {
                     txs.shift()?;
                     // Pull transaction from the mempool
-                    mempool::remove_transaction(
-                        &head_tx.tx.compute_hash(),
-                        context
-                            .store()
-                            .ok_or(ChainError::StoreError(StoreError::MissingStore))?,
-                    )?;
+                    mempool::remove_transaction(&head_tx.tx.compute_hash(), self)?;
 
                     metrics!(METRICS_TX.inc_tx_with_status_and_type(
                         MetricsTxStatus::Succeeded,
@@ -476,11 +463,7 @@ impl Blockchain {
             .map(|schedule| schedule.max)
             .unwrap_or_default() as usize;
 
-        let Some(blobs_bundle) = context
-            .store()
-            .ok_or(ChainError::StoreError(StoreError::MissingStore))?
-            .get_blobs_bundle_from_pool(tx_hash)?
-        else {
+        let Some(blobs_bundle) = self.get_blobs_bundle_from_pool(tx_hash)? else {
             // No blob tx should enter the mempool without its blobs bundle so this is an internal error
             return Err(
                 StoreError::Custom(format!("No blobs bundle found for blob tx {tx_hash}")).into(),

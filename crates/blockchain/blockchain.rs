@@ -5,15 +5,18 @@ pub mod mempool;
 pub mod payload;
 mod smoke_test;
 
-use error::{ChainError, InvalidBlockError};
+use error::{ChainError, InvalidBlockError, MempoolError};
 use ethrex_common::constants::GAS_PER_BLOB;
 use ethrex_common::types::requests::{compute_requests_hash, EncodedRequests, Requests};
 use ethrex_common::types::{
     compute_receipts_root, validate_block_header, validate_cancun_header_fields,
-    validate_prague_header_fields, validate_pre_cancun_header_fields, Block, BlockHash,
-    BlockHeader, BlockNumber, ChainConfig, EIP4844Transaction, Receipt, Transaction,
+    validate_prague_header_fields, validate_pre_cancun_header_fields, BlobsBundle, Block,
+    BlockHash, BlockHeader, BlockNumber, ChainConfig, EIP4844Transaction, MempoolTransaction,
+    Receipt, Transaction, TxType,
 };
-use ethrex_common::H256;
+use ethrex_common::{Address, H256};
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 use std::{ops::Div, time::Instant};
 
 use ethrex_storage::error::StoreError;
@@ -31,6 +34,8 @@ use tracing::{error, info, warn};
 pub struct Blockchain {
     pub vm: EVM,
     pub storage: Store,
+    pub mempool: Arc<Mutex<HashMap<H256, MempoolTransaction>>>,
+    pub blobs_bundle_pool: Arc<Mutex<HashMap<H256, BlobsBundle>>>,
 }
 
 impl Blockchain {
@@ -38,6 +43,8 @@ impl Blockchain {
         Self {
             vm: evm,
             storage: store,
+            mempool: Arc::new(Mutex::new(HashMap::new())),
+            blobs_bundle_pool: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -45,6 +52,8 @@ impl Blockchain {
         Self {
             vm: Default::default(),
             storage: store,
+            mempool: Default::default(),
+            blobs_bundle_pool: Default::default(),
         }
     }
 
@@ -149,6 +158,110 @@ impl Blockchain {
             }
         }
         info!("Added {size} blocks to blockchain");
+    }
+
+    /// Add transaction to the pool
+    pub fn add_transaction_to_pool(
+        &self,
+        hash: H256,
+        transaction: MempoolTransaction,
+    ) -> Result<(), MempoolError> {
+        let mut mempool = self
+            .mempool
+            .lock()
+            .map_err(|error| MempoolError::Custom(error.to_string()))?;
+        mempool.insert(hash, transaction);
+
+        Ok(())
+    }
+
+    /// Add a blobs bundle to the pool by its blob transaction hash
+    pub fn add_blobs_bundle_to_pool(
+        &self,
+        tx_hash: H256,
+        blobs_bundle: BlobsBundle,
+    ) -> Result<(), MempoolError> {
+        self.blobs_bundle_pool
+            .lock()
+            .map_err(|error| MempoolError::Custom(error.to_string()))?
+            .insert(tx_hash, blobs_bundle);
+        Ok(())
+    }
+
+    /// Get a blobs bundle to the pool given its blob transaction hash
+    pub fn get_blobs_bundle_from_pool(
+        &self,
+        tx_hash: H256,
+    ) -> Result<Option<BlobsBundle>, MempoolError> {
+        Ok(self
+            .blobs_bundle_pool
+            .lock()
+            .map_err(|error| MempoolError::Custom(error.to_string()))?
+            .get(&tx_hash)
+            .cloned())
+    }
+
+    /// Remove a transaction from the pool
+    pub fn remove_transaction_from_pool(&self, hash: &H256) -> Result<(), MempoolError> {
+        let mut mempool = self
+            .mempool
+            .lock()
+            .map_err(|error| MempoolError::Custom(error.to_string()))?;
+        if let Some(tx) = mempool.get(hash) {
+            if matches!(tx.tx_type(), TxType::EIP4844) {
+                self.blobs_bundle_pool
+                    .lock()
+                    .map_err(|error| MempoolError::Custom(error.to_string()))?
+                    .remove(&tx.compute_hash());
+            }
+
+            mempool.remove(hash);
+        };
+
+        Ok(())
+    }
+
+    /// Applies the filter and returns a set of suitable transactions from the mempool.
+    /// These transactions will be grouped by sender and sorted by nonce
+    pub fn filter_pool_transactions(
+        &self,
+        filter: &dyn Fn(&Transaction) -> bool,
+    ) -> Result<HashMap<Address, Vec<MempoolTransaction>>, MempoolError> {
+        let mut txs_by_sender: HashMap<Address, Vec<MempoolTransaction>> = HashMap::new();
+        let mempool = self
+            .mempool
+            .lock()
+            .map_err(|error| MempoolError::Custom(error.to_string()))?;
+
+        for (_, tx) in mempool.iter() {
+            if filter(tx) {
+                txs_by_sender
+                    .entry(tx.sender())
+                    .or_default()
+                    .push(tx.clone())
+            }
+        }
+
+        txs_by_sender.iter_mut().for_each(|(_, txs)| txs.sort());
+        Ok(txs_by_sender)
+    }
+
+    /// Gets hashes from possible_hashes that are not already known in the mempool.
+    pub fn filter_unknown_transactions(
+        &self,
+        possible_hashes: &[H256],
+    ) -> Result<Vec<H256>, MempoolError> {
+        let mempool = self
+            .mempool
+            .lock()
+            .map_err(|error| MempoolError::Custom(error.to_string()))?;
+
+        let tx_set: HashSet<_> = mempool.iter().map(|(hash, _)| hash).collect();
+        Ok(possible_hashes
+            .iter()
+            .filter(|hash| !tx_set.contains(hash))
+            .copied()
+            .collect())
     }
 }
 
@@ -343,4 +456,59 @@ fn get_total_blob_gas(tx: &EIP4844Transaction) -> u64 {
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+    use ethrex_common::types::BYTES_PER_BLOB;
+    use ethrex_storage::EngineType;
+
+    use hex_literal::hex;
+
+    // Creates an empty store, runs the test and then removes the store (if needed)
+    fn run_test(test_func: &dyn Fn(Blockchain)) {
+        // Build a new store
+        let store =
+            Store::new("store-test-db", EngineType::InMemory).expect("Failed to create test db");
+        let blockchain = Blockchain::default_with_store(store);
+        // Run the test
+        test_func(blockchain);
+    }
+
+    fn test_filter_mempool_transactions(blockchain: Blockchain) {
+        let plain_tx_decoded = Transaction::decode_canonical(&hex!("f86d80843baa0c4082f618946177843db3138ae69679a54b95cf345ed759450d870aa87bee538000808360306ba0151ccc02146b9b11adf516e6787b59acae3e76544fdcd75e77e67c6b598ce65da064c5dd5aae2fbb535830ebbdad0234975cd7ece3562013b63ea18cc0df6c97d4")).unwrap();
+        let plain_tx_sender = plain_tx_decoded.sender();
+        let plain_tx = MempoolTransaction::new(plain_tx_decoded, plain_tx_sender);
+        let blob_tx_decoded = Transaction::decode_canonical(&hex!("03f88f0780843b9aca008506fc23ac00830186a09400000000000000000000000000000000000001008080c001e1a0010657f37554c781402a22917dee2f75def7ab966d7b770905398eba3c44401401a0840650aa8f74d2b07f40067dc33b715078d73422f01da17abdbd11e02bbdfda9a04b2260f6022bf53eadb337b3e59514936f7317d872defb891a708ee279bdca90")).unwrap();
+        let blob_tx_sender = blob_tx_decoded.sender();
+        let blob_tx = MempoolTransaction::new(blob_tx_decoded, blob_tx_sender);
+        let plain_tx_hash = plain_tx.compute_hash();
+        let blob_tx_hash = blob_tx.compute_hash();
+        let filter =
+            |tx: &Transaction| -> bool { matches!(tx, Transaction::EIP4844Transaction(_)) };
+        blockchain
+            .add_transaction_to_pool(blob_tx_hash, blob_tx.clone())
+            .unwrap();
+        blockchain
+            .add_transaction_to_pool(plain_tx_hash, plain_tx)
+            .unwrap();
+        let txs = blockchain.filter_pool_transactions(&filter).unwrap();
+        assert_eq!(txs, HashMap::from([(blob_tx.sender(), vec![blob_tx])]));
+    }
+
+    fn blobs_bundle_loadtest(blockchain: Blockchain) {
+        // Write a bundle of 6 blobs 10 times
+        // If this test fails please adjust the max_size in the DB config
+        for i in 0..300 {
+            let blobs = [[i as u8; BYTES_PER_BLOB]; 6];
+            let commitments = [[i as u8; 48]; 6];
+            let proofs = [[i as u8; 48]; 6];
+            let bundle = BlobsBundle {
+                blobs: blobs.to_vec(),
+                commitments: commitments.to_vec(),
+                proofs: proofs.to_vec(),
+            };
+            blockchain
+                .add_blobs_bundle_to_pool(H256::random(), bundle)
+                .unwrap();
+        }
+    }
+}
