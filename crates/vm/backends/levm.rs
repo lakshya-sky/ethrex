@@ -12,8 +12,8 @@ use ethrex_common::types::requests::Requests;
 use ethrex_common::types::Fork;
 use ethrex_common::{
     types::{
-        code_hash, AccountInfo, Block, BlockHeader, ChainConfig, Receipt, Transaction, TxKind,
-        Withdrawal, GWEI_TO_WEI,
+        code_hash, AccountInfo, Block, BlockHeader, Receipt, Transaction, TxKind, Withdrawal,
+        GWEI_TO_WEI,
     },
     Address, H256, U256,
 };
@@ -70,17 +70,25 @@ impl LEVM {
         let mut receipts = Vec::new();
         let mut cumulative_gas_used = 0;
 
+        let evm_config = EVMConfig::new_from_chain_config(&config, block_header);
         for tx in block.body.transactions.iter() {
             let report = Self::execute_tx(
                 tx,
                 block_header,
                 store_wrapper.clone(),
                 block_cache.clone(),
-                &config,
+                evm_config.clone(),
             )
             .map_err(EvmError::from)?;
 
-            let mut new_state = report.new_state.clone();
+            let ExecutionReport {
+                result,
+                mut new_state,
+                gas_used,
+                gas_refunded,
+                logs,
+                ..
+            } = report;
             // Now original_value is going to be the same as the current_value, for the next transaction.
             // It should have only one value but it is convenient to keep on using our CacheDB structure
             for account in new_state.values_mut() {
@@ -91,14 +99,14 @@ impl LEVM {
 
             block_cache.extend(new_state);
 
-            // Currently, in LEVM, we don't substract refunded gas to used gas, but that can change in the future.
-            let gas_used = report.gas_used - report.gas_refunded;
+            // Currently, in LEVM, we don't subtract refunded gas to used gas, but that can change in the future.
+            let gas_used = gas_used - gas_refunded;
             cumulative_gas_used += gas_used;
             let receipt = Receipt::new(
                 tx.tx_type(),
-                matches!(report.result.clone(), TxResult::Success),
+                matches!(result, TxResult::Success),
                 cumulative_gas_used,
-                report.logs.clone(),
+                logs,
             );
 
             receipts.push(receipt);
@@ -113,14 +121,11 @@ impl LEVM {
                 .map(|w| (w.address, u128::from(w.amount) * u128::from(GWEI_TO_WEI)))
             {
                 // We check if it was in block_cache, if not, we get it from DB.
-                let mut account = block_cache.get(&address).cloned().unwrap_or({
+                let account = block_cache.entry(address).or_insert_with(|| {
                     let acc_info = store_wrapper.get_account_info(address);
                     Account::from(acc_info)
                 });
-
                 account.info.balance += increment.into();
-
-                block_cache.insert(address, account);
             }
         }
 
@@ -151,14 +156,13 @@ impl LEVM {
         // A cache database for intermediate state changes during execution.
         block_cache: CacheDB,
         // The EVM configuration to use.
-        chain_config: &ChainConfig,
+        config: EVMConfig,
     ) -> Result<ExecutionReport, EvmError> {
         let gas_price: U256 = tx
             .effective_gas_price(block_header.base_fee_per_gas)
             .ok_or(VMError::InvalidTransaction)?
             .into();
 
-        let config = EVMConfig::new_from_chain_config(chain_config, block_header);
         let env = Environment {
             origin: tx.sender(),
             refunded_gas: 0,
@@ -189,7 +193,7 @@ impl LEVM {
             tx.value(),
             tx.data().clone(),
             db,
-            block_cache.clone(),
+            block_cache,
             tx.access_list(),
             tx.authorization_list(),
         )?;

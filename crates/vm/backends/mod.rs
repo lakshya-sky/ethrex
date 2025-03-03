@@ -8,7 +8,7 @@ use ethrex_common::types::{
     Block, BlockHeader, ChainConfig, Fork, Receipt, Transaction, Withdrawal,
 };
 use ethrex_common::{types::AccountInfo, Address, BigEndianHash, H256, U256};
-use ethrex_levm::db::CacheDB;
+use ethrex_levm::{db::CacheDB, vm::EVMConfig};
 use ethrex_storage::{error::StoreError, AccountUpdate};
 use levm::LEVM;
 use revm_b::REVM;
@@ -97,12 +97,14 @@ impl EVM {
                     block_hash: block_header.parent_hash,
                 });
 
+                let evm_config = EVMConfig::new_from_chain_config(chain_config, block_header);
+
                 let execution_report = LEVM::execute_tx(
                     tx,
                     block_header,
-                    store_wrapper.clone(),
+                    store_wrapper,
                     block_cache.clone(),
-                    chain_config,
+                    evm_config,
                 )?;
 
                 *remaining_gas = remaining_gas.saturating_sub(execution_report.gas_used);

@@ -302,7 +302,7 @@ fn bench_add_blocks(c: &mut Criterion) {
     // Use the same base seed for consistent results across runs
 
     let num_blocks = 1000; // We'll benchmark adding 1000 blocks
-    let txs_per_block = 5; // Number of transactions per block
+    let txs_per_block = 50; // Number of transactions per block
 
     let group_id = BenchmarkId::new("add_1000_blocks", num_blocks);
     group.bench_function(group_id, |b| {
