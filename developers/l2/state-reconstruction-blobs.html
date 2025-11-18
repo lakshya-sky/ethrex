@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Monitoring and metrics - Ethrex</title>
+        <title>Generate blobs for the state reconstruction test - Ethrex</title>
 
 
         <!-- Custom HTML head -->
@@ -237,64 +237,68 @@
 }
 
 </style>
-<h1 id="monitoring-and-metrics"><a class="header" href="#monitoring-and-metrics">Monitoring and Metrics</a></h1>
-<p>Ethrex exposes metrics in Prometheus format on port <code>9090</code> by default. But the easiest way to monitor your node is to use the provided Docker Compose stack, which includes Prometheus and Grafana preconfigured. For that we are currently using port <code>3701</code>, this will match the default in the future but for now if running the containers we expected to have the ethrex metrics exposed on port <code>3701</code>.</p>
-<h2 id="quickstart-monitoring-stack-with-docker-compose"><a class="header" href="#quickstart-monitoring-stack-with-docker-compose">Quickstart: Monitoring Stack with Docker Compose</a></h2>
+<h1 id="generate-blobs-for-the-state-reconstruction-test"><a class="header" href="#generate-blobs-for-the-state-reconstruction-test">Generate blobs for the state reconstruction test</a></h1>
+<p>The test in <code>crates/l2/tests/state_reconstruct.rs</code> replays a fixed set of blobs to reconstruct. The fixtures need to be regenerated whenever the genesis file changes, because a new genesis alters the hash of the very first block and, by extension, all descendant blocks. Our stored blobs encode parent pointers, so stale hashes make the fixtures unusable. If you ever need to regenerate those blobs, you need to change the files <code>payload_builder.rs</code> and <code>l1_committer.rs</code> and run the sequencer to capture fresh blobs.</p>
+<h2 id="summary"><a class="header" href="#summary">Summary</a></h2>
 <ol>
-<li>
-<p><strong>Clone the repository:</strong></p>
-<pre><code class="language-sh">git clone https://github.com/lambdaclass/ethrex.git
-cd ethrex/metrics
-</code></pre>
-</li>
-<li>
-<p><strong>Start the monitoring stack:</strong></p>
-<pre><code class="language-sh"># Optional: if you have updated from a previous version, stop first the docker compose.
-# docker compose -f docker-compose-metrics.yaml -f docker-compose-metrics-l1.overrides.yaml down
-docker compose -f docker-compose-metrics.yaml -f docker-compose-metrics-l1.overrides.yaml up -d
-</code></pre>
-</li>
+<li>Limit every block to ten transactions to make the batches predictable.</li>
+<li>Store each blob locally whenever the committer submits a batch.</li>
+<li>Run the dev stack long enough to capture six blobs and move them into <code>fixtures/blobs/</code>.</li>
 </ol>
-<p><em><strong>Note:</strong> You might want to restart the docker containers in case of an update from a previous ethrex version to make sure the latest provisioned configurations are applied:</em></p>
-<ol start="3">
+<h2 id="1-cap-block-payloads-at-10-transactions"><a class="header" href="#1-cap-block-payloads-at-10-transactions">1. Cap block payloads at 10 transactions</a></h2>
+<p>Edit <code>crates/l2/sequencer/block_producer/payload_builder.rs</code> and, inside the <code>fill_transactions</code> loop, add the early exit that forces every L2 block to contain at most ten transactions:</p>
+<pre><pre class="playground"><code class="language-rust edition2024"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>if context.payload.body.transactions.len() &gt;= 10 {
+    println!("Reached max transactions per block limit");
+    break;
+}
+<span class="boring">}</span></code></pre></pre>
+<p>That guarantees we have transactions in each block for at least 6 batches.</p>
+<h2 id="2-persist-every-blob-locally-when-the-committer-sends-a-batch"><a class="header" href="#2-persist-every-blob-locally-when-the-committer-sends-a-batch">2. Persist every blob locally when the committer sends a batch</a></h2>
+<p>Still in the sequencer, open <code>crates/l2/sequencer/l1_committer.rs</code>:</p>
+<ul>
 <li>
-<p><strong>Run ethrex with metrics enabled:</strong></p>
-<p>Make sure to start ethrex with the <code>--metrics</code> flag and set the port to <code>3701</code>:</p>
-<pre><code class="language-sh">ethrex --authrpc.jwtsecret ./secrets/jwt.hex --network hoodi --metrics --metrics.port 3701
-</code></pre>
+<p>Add this helper function:</p>
+<pre><pre class="playground"><code class="language-rust edition2024"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>fn store_blobs(blobs: Vec&lt;Blob&gt;, current_blob: u64) {
+    let blob = blobs.first().unwrap();
+    fs::write(format!("{current_blob}-1.blob"), blob).unwrap();
+}
+<span class="boring">}</span></code></pre></pre>
 </li>
-</ol>
-<p>This will launch Prometheus and Grafana, already set up to scrape ethrex metrics.</p>
-<h2 id="accessing-metrics-and-dashboards"><a class="header" href="#accessing-metrics-and-dashboards">Accessing Metrics and Dashboards</a></h2>
-<ul>
-<li><strong>Prometheus:</strong> <a href="http://localhost:9091">http://localhost:9091</a></li>
-<li><strong>Grafana:</strong> <a href="http://localhost:3001">http://localhost:3001</a>
-<ul>
-<li>Default login: <code>admin</code> / <code>admin</code></li>
-<li>Prometheus is preconfigured as a data source</li>
-<li>Example dashboards are included in the repo</li>
-</ul>
+<li>
+<p>At the end of <code>send_commitment</code> (after logging the transaction hash) dump the blob that was just submitted:</p>
+<pre><pre class="playground"><code class="language-rust edition2024"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Rest of the code ...
+info!("Commitment sent: {commit_tx_hash:#x}");
+store_blobs(batch.blobs_bundle.blobs.clone(), batch.number);
+Ok(commit_tx_hash)  ```
+
+<span class="boring">}</span></code></pre></pre>
 </li>
 </ul>
-<p>Metrics from ethrex will be available at <code>http://localhost:3701/metrics</code> in Prometheus format if you followed <a href="#run-ethrex-with-metrics-enabled">step 3</a>.</p>
-<p>For detailed information on the provided Grafana dashboards, see our <a href="../../developers/l1/dashboards.html">L1 Dashboard document</a>.</p>
-<h2 id="custom-configuration"><a class="header" href="#custom-configuration">Custom Configuration</a></h2>
-<p>Your ethrex setup may differ from the default configuration. Check your endpoints at <code>provisioning/prometheus/prometheus_l1_sync_docker.yaml</code>.</p>
-<p>Also if you have a centralized Prometheus or Grafana setup, you can adapt the provided configuration files to fit your environment. or even stop the docker containers that run Prometheus and/or Grafana leaving only the additional <code>ethereum-metrics-exporter</code> running alongside ethrex to export the metrics to your existing monitoring stack.</p>
-<pre><code class="language-sh">docker compose -f docker-compose-metrics.yaml -f docker-compose-metrics-l1.overrides.yaml up -d ethereum-metrics-exporter 
+<p>Running the node with the deposits of the rich accounts will create <code>N-1.blob</code> files (you can move them into <code>fixtures/blobs/</code> afterwards).</p>
+<h2 id="3-run-the-l2-and-capture-six-blobs"><a class="header" href="#3-run-the-l2-and-capture-six-blobs">3. Run the L2 and capture six blobs</a></h2>
+<p>Start the local L2 with a 20 seconds per commit so we have at least 6 batches with transactions:</p>
+<pre><code class="language-sh">COMPILE_CONTRACTS=true cargo run --release --bin ethrex --features l2,l2-sql -- l2 --dev --no-monitor --committer.commit-time 20000
 </code></pre>
-<hr />
-<p>For manual setup or more details, see the <a href="https://prometheus.io/docs/introduction/overview/">Prometheus documentation</a> and <a href="https://grafana.com/docs/">Grafana documentation</a>.</p>
+<p>In another terminal run:</p>
+<pre><code class="language-sh">make init-prover-exec
+</code></pre>
+<p>Once the sequencer has produced six batches you will see six files named <code>1-1.blob</code> through <code>6-1.blob</code>. Copy them into <code>fixtures/blobs/</code> (overwriting the existing files).</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="../../l1/running/configuration.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="../../developers/l2/integration-tests.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
-                            <a rel="next prefetch" href="../../l1/fundamentals/index.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="../../vm/levm/debug.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <i class="fa fa-angle-right"></i>
                             </a>
 
@@ -304,11 +308,11 @@ docker compose -f docker-compose-metrics.yaml -f docker-compose-metrics-l1.overr
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="../../l1/running/configuration.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="../../developers/l2/integration-tests.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <i class="fa fa-angle-left"></i>
                     </a>
 
-                    <a rel="next prefetch" href="../../l1/fundamentals/index.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="../../vm/levm/debug.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <i class="fa fa-angle-right"></i>
                     </a>
             </nav>
