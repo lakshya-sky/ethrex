@@ -454,6 +454,18 @@ impl PeerTable {
             .map_err(PeerTableError::InternalError)
     }
 
+    /// Get how many FindNode requests we have sent for a node
+    pub async fn get_find_node_sent(&mut self, node_id: &H256) -> Result<u64, PeerTableError> {
+        match self
+            .handle
+            .call(CallMessage::GetFindNodeSent { node_id: *node_id })
+            .await?
+        {
+            OutMessage::FindNodeSent(count) => Ok(count),
+            _ => unreachable!(),
+        }
+    }
+
     /// Get closest nodes according to kademlia's distance
     pub async fn get_closest_nodes(&mut self, node_id: &H256) -> Result<Vec<Node>, PeerTableError> {
         match self
@@ -621,6 +633,13 @@ impl PeerTableServer {
             return OutMessage::IpMismatch;
         }
         OutMessage::Contact(contact.clone())
+    }
+
+    fn get_find_node_sent(&self, node_id: H256) -> u64 {
+        let Some(contact) = self.contacts.get(&node_id) else {
+            return 0;
+        };
+        contact.n_find_node_sent
     }
 
     fn get_closest_nodes(&mut self, node_id: H256) -> Vec<Node> {
@@ -812,6 +831,7 @@ enum CallMessage {
     GetClosestNodes { node_id: H256 },
     GetPeersData,
     GetRandomPeer { capabilities: Vec<Capability> },
+    GetFindNodeSent { node_id: H256 },
 }
 
 #[derive(Debug)]
@@ -834,6 +854,7 @@ pub enum OutMessage {
     UnknownContact,
     IpMismatch,
     PeersData(Vec<PeerData>),
+    FindNodeSent(u64),
 }
 
 #[derive(Debug, Error)]
@@ -938,6 +959,9 @@ impl GenServer for PeerTableServer {
             )),
             CallMessage::ValidateContact { node_id, sender_ip } => {
                 CallResponse::Reply(self.validate_contact(node_id, sender_ip))
+            }
+            CallMessage::GetFindNodeSent { node_id } => {
+                CallResponse::Reply(OutMessage::FindNodeSent(self.get_find_node_sent(node_id)))
             }
             CallMessage::GetClosestNodes { node_id } => {
                 CallResponse::Reply(Self::OutMsg::Nodes(self.get_closest_nodes(node_id)))

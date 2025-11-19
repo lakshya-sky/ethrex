@@ -3,6 +3,7 @@ use ethrex_common::{H256, H512, U256, types::AccountState, utils::keccak};
 use ethrex_rlp::encode::RLPEncode;
 use secp256k1::{PublicKey, SecretKey};
 use std::{
+    net::IpAddr,
     path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -220,4 +221,192 @@ pub fn dump_storages_to_file(
             .collect::<Vec<_>>()
             .encode_to_vec(),
     )
+}
+
+// is_valid_relay_ip reports whether an IP relayed from the given sender IP is a valid connection target.
+pub fn is_valid_relay_ip(sender: IpAddr, addr: IpAddr) -> bool {
+    if addr.is_unspecified() {
+        return false;
+    }
+
+    if addr_is_special_network(addr) {
+        return false;
+    }
+
+    if addr.is_loopback() && !sender.is_loopback() {
+        return false;
+    }
+
+    if addr_is_lan(addr) && !addr_is_lan(sender) {
+        return false;
+    }
+
+    true
+}
+
+pub fn addr_is_special_network(mut ip: IpAddr) -> bool {
+    ip = ip.to_canonical();
+
+    if ip.is_multicast() {
+        return true;
+    }
+
+    false
+}
+
+pub fn addr_is_lan(mut ip: IpAddr) -> bool {
+    ip = ip.to_canonical();
+
+    if ip.is_loopback() {
+        return true;
+    }
+
+    let is_private = match ip {
+        IpAddr::V4(v4) => v4.is_private(),
+        IpAddr::V6(v6) => v6.is_unique_local(),
+    };
+
+    let is_link_local = match ip {
+        IpAddr::V4(v4) => v4.is_link_local(),
+        IpAddr::V6(v6) => v6.is_unicast_link_local(),
+    };
+
+    is_private || is_link_local
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::IpAddr;
+
+    #[test]
+    fn test_addr_is_lan() {
+        // Test cases that should return true (LAN addresses)
+        let lan_addresses = vec![
+            // Loopback
+            "127.0.0.1",
+            // Private IPv4
+            "10.0.1.1",
+            "10.22.0.3",
+            "172.31.252.251",
+            "192.168.1.4",
+            // IPv6 link-local and unique local
+            "fe80::f4a1:8eff:fec5:9d9d",
+            "febf::ab32:2233",
+            "fc00::4",
+            // IPv4-in-IPv6 (loopback and private)
+            "::ffff:127.0.0.1",
+            "::ffff:10.10.0.2",
+        ];
+
+        for addr_str in lan_addresses {
+            let ip: IpAddr = addr_str.parse().unwrap();
+            assert!(
+                addr_is_lan(ip),
+                "Expected {} to be identified as LAN",
+                addr_str
+            );
+        }
+
+        // Test cases that should return false (non-LAN addresses)
+        let non_lan_addresses = vec![
+            "192.0.2.1",
+            "1.0.0.0",
+            "172.32.0.1",
+            "fec0::2233",
+            // IPv4-in-IPv6 (public)
+            "::ffff:88.99.100.2",
+        ];
+
+        for addr_str in non_lan_addresses {
+            let ip: IpAddr = addr_str.parse().unwrap();
+            assert!(
+                !addr_is_lan(ip),
+                "Expected {} to NOT be identified as LAN",
+                addr_str
+            );
+        }
+    }
+
+    #[test]
+    fn test_addr_is_special_network() {
+        // Test cases that should return true (multicast addresses)
+        let special_addresses = vec![
+            // IPv4 multicast
+            "224.0.0.22",
+            // IPv6 multicast
+            "ff05::1:3",
+        ];
+
+        for addr_str in special_addresses {
+            let ip: IpAddr = addr_str.parse().unwrap();
+            assert!(
+                addr_is_special_network(ip),
+                "Expected {} to be identified as special network",
+                addr_str
+            );
+        }
+
+        // Test cases that should return false (non-multicast addresses)
+        let non_special_addresses = vec![
+            "192.0.3.1",
+            "1.0.0.0",
+            "172.32.0.1",
+            "fec0::2233",
+            "127.0.0.1",
+            "192.168.1.1",
+        ];
+
+        for addr_str in non_special_addresses {
+            let ip: IpAddr = addr_str.parse().unwrap();
+            assert!(
+                !addr_is_special_network(ip),
+                "Expected {} to NOT be identified as special network",
+                addr_str
+            );
+        }
+    }
+
+    #[test]
+    fn test_is_valid_relay_ip() {
+        let test_cases = vec![
+            // (sender, addr, expected_result)
+            // Unspecified addresses should return false
+            ("127.0.0.1", "0.0.0.0", false),
+            ("192.168.0.1", "0.0.0.0", false),
+            ("23.55.1.242", "0.0.0.0", false),
+            // Multicast (special network) should return false
+            ("127.0.0.1", "224.0.0.22", false),
+            ("192.168.0.1", "224.0.0.22", false),
+            ("23.55.1.242", "224.0.0.22", false),
+            // Loopback from non-loopback should return false
+            ("192.168.0.1", "127.0.2.19", false),
+            // LAN from non-LAN should return false
+            ("23.55.1.242", "192.168.0.1", false),
+            // Valid cases should return true
+            // Loopback to loopback is OK
+            ("127.0.0.1", "127.0.2.19", true),
+            // Loopback to LAN is OK
+            ("127.0.0.1", "192.168.0.1", true),
+            // Loopback to public is OK
+            ("127.0.0.1", "23.55.1.242", true),
+            // LAN to LAN is OK
+            ("192.168.0.1", "192.168.0.1", true),
+            // LAN to public is OK
+            ("192.168.0.1", "23.55.1.242", true),
+            // Public to public is OK
+            ("23.55.1.242", "23.55.1.242", true),
+        ];
+
+        for (sender_str, addr_str, expected) in test_cases {
+            let sender: IpAddr = sender_str.parse().unwrap();
+            let addr: IpAddr = addr_str.parse().unwrap();
+            let result = is_valid_relay_ip(sender, addr);
+            assert_eq!(
+                result, expected,
+                "is_valid_relay_ip({}, {}) returned {:?}, expected {:?}",
+                sender_str, addr_str, result, expected
+            );
+        }
+    }
 }

@@ -10,7 +10,8 @@ use crate::{
     metrics::METRICS,
     types::{Endpoint, Node, NodeRecord},
     utils::{
-        get_msg_expiration_from_seconds, is_msg_expired, node_id, public_key_from_signing_key,
+        get_msg_expiration_from_seconds, is_msg_expired, is_valid_relay_ip, node_id,
+        public_key_from_signing_key,
     },
 };
 use bytes::BytesMut;
@@ -182,7 +183,8 @@ impl DiscoveryServer {
                     return Ok(());
                 }
 
-                self.handle_neighbors(neighbors_message).await?;
+                self.handle_neighbors(neighbors_message, sender_public_key, from)
+                    .await?;
             }
             Message::ENRRequest(enrrequest_message) => {
                 trace!(received = "ENRRequest", msg = ?enrrequest_message, from = %format!("{sender_public_key:#x}"));
@@ -407,11 +409,33 @@ impl DiscoveryServer {
     async fn handle_neighbors(
         &mut self,
         neighbors_message: NeighborsMessage,
+        sender_public_key: H512,
+        from: SocketAddr,
     ) -> Result<(), DiscoveryServerError> {
-        // TODO(#3746): check that we requested neighbors from the node
-        self.peer_table
-            .new_contacts(neighbors_message.nodes, self.local_node.node_id())
-            .await?;
+        let sender = node_id(&sender_public_key);
+        let sender_ip = from.ip();
+
+        if let Ok(find_node_sent) = self.peer_table.get_find_node_sent(&sender).await
+            && find_node_sent > 0
+        {
+            let nodes = neighbors_message
+                .nodes
+                .into_iter()
+                .filter_map(|node| {
+                    if !is_valid_relay_ip(sender_ip, node.ip) {
+                        error!(addr = ?node.ip, peer=%format!("{sender_public_key:#x}"), "Wrong IP relayed");
+                        return None;
+                    }
+                    Some(node)
+                })
+                .collect::<Vec<_>>();
+
+            self.peer_table
+                .new_contacts(nodes, self.local_node.node_id())
+                .await?;
+        }else{
+            error!(peer=%format!("{sender_public_key:#x}"), "Unsolicited NeighborsMessage received");
+        }
         Ok(())
     }
 
