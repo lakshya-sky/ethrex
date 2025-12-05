@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>L2 Hub - Ethrex</title>
+        <title>Databases - Ethrex</title>
 
 
         <!-- Custom HTML head -->
@@ -237,18 +237,18 @@
 }
 
 </style>
-<h1 id="l2-hub"><a class="header" href="#l2-hub">L2 Hub</a></h1>
-<p>TDB</p>
+<h1 id="databases"><a class="header" href="#databases">Databases</a></h1>
+<p>Ethrex uses a <code>StoreEngine</code> trait to abstract database behaviour and allow for multiple opt-in backends. It also uses a versioning system to ensure we don't run on invalid data if we restart the node after a breaking change to the DB structure. This system consists of a <code>STORE_SCHEMA_VERSION</code> constant, defined in <code>crates/storage/lib.rs</code> that must be updated after any breaking change and that is checked every time we start the node.</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="../../l2/interacting/blockscout.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="../../l1/fundamentals/index.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
-                            <a rel="next prefetch" href="../../l2/interacting/shared_bridge.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="../../l1/fundamentals/networking.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <i class="fa fa-angle-right"></i>
                             </a>
 
@@ -258,11 +258,11 @@
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="../../l2/interacting/blockscout.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="../../l1/fundamentals/index.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <i class="fa fa-angle-left"></i>
                     </a>
 
-                    <a rel="next prefetch" href="../../l2/interacting/shared_bridge.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="../../l1/fundamentals/networking.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <i class="fa fa-angle-right"></i>
                     </a>
             </nav>
