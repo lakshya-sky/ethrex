@@ -4100,6 +4100,13 @@ SELECT *
 FROM messages;
 </code></pre>
 <p>You can then safely delete the <code>messages</code> table</p>
+<h2 id="from-v8-to-v9"><a class="header" href="#from-v8-to-v9">From v8 to v9</a></h2>
+<p>The table <code>balance_diffs</code> schema was changed. We added a new column <code>value_per_token</code>.</p>
+<p>In order to perform a migration tou would need to add the new column with type <code>BLOB</code>.
+You can do this by executing:</p>
+<pre><code class="language-sql">ALTER TABLE balance_diffs 
+ADD COLUMN value_per_token BLOB;
+</code></pre>
 <div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <style>
 .mdbook-alerts {
@@ -9970,11 +9977,8 @@ docker compose -f docker-compose-metrics.yaml -f docker-compose-metrics-l1.overr
 <p><img src="developers/l1/img/variables.png" alt="dashboard variables" /></p>
 <h2 id="execution-and-consensus-summary"><a class="header" href="#execution-and-consensus-summary">Execution and consensus summary</a></h2>
 <h3 id="execution-client"><a class="header" href="#execution-client">Execution Client</a></h3>
-<p>Confirms the execution client name and build that each monitored instance is running so you can spot mismatched deployments quickly.</p>
+<p>Confirms the execution client name, build and network that each monitored instance is running so you can spot mismatched deployments quickly.</p>
 <p><img src="developers/l1/img/execution_client.png" alt="Execution Client" /></p>
-<h3 id="consensus-config"><a class="header" href="#consensus-config">Consensus Config</a></h3>
-<p>Shows the consensus configuration reported by <code>ethereum-metrics-exporter</code>, helping you verify which network the node is running.</p>
-<p><img src="developers/l1/img/consensus_config.png" alt="Consensus Config" /></p>
 <h3 id="consensus-fork"><a class="header" href="#consensus-fork">Consensus Fork</a></h3>
 <p>Highlights the active fork reported by <code>ethereum-metrics-exporter</code>, which is a useful signal during planned upgrades.</p>
 <p><img src="developers/l1/img/consensus_fork.png" alt="Consensus Fork" /></p>
