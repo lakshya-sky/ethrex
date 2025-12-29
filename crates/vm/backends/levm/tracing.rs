@@ -1,5 +1,6 @@
+use ethrex_common::tracing::CallTraceFrame;
+use ethrex_common::types::BlockHeader;
 use ethrex_common::types::{Block, Transaction};
-use ethrex_common::{tracing::CallTrace, types::BlockHeader};
 use ethrex_levm::vm::VMType;
 use ethrex_levm::{db::gen_db::GeneralizedDatabase, tracing::LevmCallTracer, vm::VM};
 
@@ -49,7 +50,7 @@ impl LEVM {
         only_top_call: bool,
         with_log: bool,
         vm_type: VMType,
-    ) -> Result<CallTrace, EvmError> {
+    ) -> Result<CallTraceFrame, EvmError> {
         let env = Self::setup_env(
             tx,
             tx.sender().map_err(|error| {
@@ -72,6 +73,6 @@ impl LEVM {
         let callframe = vm.get_trace_result()?;
 
         // We only return the top call because a transaction only has one call with subcalls
-        Ok(vec![callframe])
+        Ok(callframe)
     }
 }

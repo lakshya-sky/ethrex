@@ -18,6 +18,7 @@ pub struct CallTraceFrame {
     /// Address that initiated the call
     pub from: Address,
     /// Address that received the call
+    #[serde(skip_serializing_if = "Address::is_zero")]
     pub to: Address,
     /// Amount transfered
     pub value: U256,
@@ -31,13 +32,19 @@ pub struct CallTraceFrame {
     #[serde(with = "crate::serde_utils::bytes")]
     pub input: Bytes,
     /// Return data
-    #[serde(with = "crate::serde_utils::bytes")]
+    #[serde(
+        with = "crate::serde_utils::bytes",
+        skip_serializing_if = "Bytes::is_empty"
+    )]
     pub output: Bytes,
     /// Error returned if the call failed
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     /// Revert reason if the call reverted
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub revert_reason: Option<String>,
     /// List of nested sub-calls
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub calls: Vec<CallTraceFrame>,
     /// Logs (if enabled)
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -63,5 +70,6 @@ pub struct CallLog {
     pub topics: Vec<H256>,
     #[serde(with = "crate::serde_utils::bytes")]
     pub data: Bytes,
+    #[serde(with = "crate::serde_utils::u64::hex_str")]
     pub position: u64,
 }

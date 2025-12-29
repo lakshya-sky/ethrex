@@ -1,5 +1,5 @@
 use crate::backends::levm::LEVM;
-use ethrex_common::tracing::CallTrace;
+use ethrex_common::tracing::CallTraceFrame;
 use ethrex_common::types::Block;
 
 use crate::{Evm, EvmError};
@@ -15,7 +15,7 @@ impl Evm {
         tx_index: usize,
         only_top_call: bool,
         with_log: bool,
-    ) -> Result<CallTrace, EvmError> {
+    ) -> Result<CallTraceFrame, EvmError> {
         let tx = block
             .body
             .transactions

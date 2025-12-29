@@ -1,10 +1,12 @@
 use std::time::Duration;
 
 use ethrex_common::H256;
-use ethrex_common::{serde_utils, tracing::CallTrace, types::BlockNumber};
+use ethrex_common::serde_utils;
+use ethrex_common::tracing::CallTraceFrame;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::types::block_identifier::BlockIdentifier;
 use crate::{rpc::RpcHandler, utils::RpcErr};
 
 /// Default max amount of blocks to re-excute if it is not given
@@ -18,7 +20,7 @@ pub struct TraceTransactionRequest {
 }
 
 pub struct TraceBlockByNumberRequest {
-    number: BlockNumber,
+    block_identifier: BlockIdentifier,
     trace_config: TraceConfig,
 }
 
@@ -130,6 +132,7 @@ impl RpcHandler for TraceBlockByNumberRequest {
         if params.len() != 1 && params.len() != 2 {
             return Err(RpcErr::BadParams("Expected 1 or 2 params".to_owned()));
         };
+        let block_identifier = BlockIdentifier::parse(params[0].clone(), 0)?;
         let trace_config = if params.len() == 2 {
             serde_json::from_value(params[1].clone())?
         } else {
@@ -137,7 +140,7 @@ impl RpcHandler for TraceBlockByNumberRequest {
         };
 
         Ok(TraceBlockByNumberRequest {
-            number: serde_json::from_value(params[0].clone())?,
+            block_identifier,
             trace_config,
         })
     }
@@ -146,9 +149,14 @@ impl RpcHandler for TraceBlockByNumberRequest {
         &self,
         context: crate::rpc::RpcApiContext,
     ) -> Result<serde_json::Value, crate::utils::RpcErr> {
+        let block_number = self
+            .block_identifier
+            .resolve_block_number(&context.storage)
+            .await?
+            .ok_or(RpcErr::Internal("Block not Found".to_string()))?;
         let block = context
             .storage
-            .get_block_by_number(self.number)
+            .get_block_by_number(block_number)
             .await?
             .ok_or(RpcErr::Internal("Block not Found".to_string()))?;
         let reexec = self.trace_config.reexec.unwrap_or(DEFAULT_REEXEC);
@@ -173,9 +181,8 @@ impl RpcHandler for TraceBlockByNumberRequest {
                     )
                     .await
                     .map_err(|err| RpcErr::Internal(err.to_string()))?;
-                // We need to show transactions from newest to oldest
-                let block_trace: BlockTrace<CallTrace> =
-                    call_traces.into_iter().rev().map(Into::into).collect();
+                let block_trace: BlockTrace<CallTraceFrame> =
+                    call_traces.into_iter().map(Into::into).collect();
                 Ok(serde_json::to_value(block_trace)?)
             }
         }

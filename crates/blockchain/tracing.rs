@@ -3,7 +3,7 @@ use std::{
     time::Duration,
 };
 
-use ethrex_common::{H256, tracing::CallTrace, types::Block};
+use ethrex_common::{H256, tracing::CallTraceFrame, types::Block};
 use ethrex_storage::Store;
 use ethrex_vm::{Evm, EvmError};
 
@@ -19,7 +19,7 @@ impl Blockchain {
         timeout: Duration,
         only_top_call: bool,
         with_log: bool,
-    ) -> Result<CallTrace, ChainError> {
+    ) -> Result<CallTraceFrame, ChainError> {
         // Fetch the transaction's location and the block it is contained in
         let Some((_, block_hash, tx_index)) =
             self.storage.get_transaction_location(tx_hash).await?
@@ -54,7 +54,7 @@ impl Blockchain {
         timeout: Duration,
         only_top_call: bool,
         with_log: bool,
-    ) -> Result<Vec<(H256, CallTrace)>, ChainError> {
+    ) -> Result<Vec<(H256, CallTraceFrame)>, ChainError> {
         // Obtain the block's parent state
         let mut vm = self
             .rebuild_parent_state(block.header.parent_hash, reexec)
