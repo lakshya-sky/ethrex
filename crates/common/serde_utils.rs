@@ -605,6 +605,89 @@ fn parse_duration(input: String) -> Option<Duration> {
     Some(res)
 }
 
+pub mod hashmap_h256_u256 {
+    use ethereum_types::{H256, U256};
+    use serde::de::IntoDeserializer;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::collections::HashMap;
+
+    pub mod hex_str {
+        use super::*;
+        pub fn serialize<S>(value: &HashMap<H256, U256>, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            let raw_map: HashMap<String, String> = value
+                .iter()
+                .map(|(k, v)| (format!("{k:#x}"), format!("{v:#x}")))
+                .collect();
+            raw_map.serialize(serializer)
+        }
+
+        pub fn deserialize<'de, D>(deserializer: D) -> Result<HashMap<H256, U256>, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            let raw_map = HashMap::<String, String>::deserialize(deserializer)?;
+            raw_map
+                .into_iter()
+                .map(|(k, v)| {
+                    let key_deser = k.into_deserializer();
+                    let val_deser = v.into_deserializer();
+
+                    let key = H256::deserialize(key_deser)?;
+                    let value = super::super::u256::deser_hex_or_dec_str(val_deser)?;
+                    Ok((key, value))
+                })
+                .collect()
+        }
+    }
+
+    pub mod hex_str_opt {
+        use super::*;
+        pub fn serialize<S>(
+            value: &Option<HashMap<H256, U256>>,
+            serializer: S,
+        ) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            let raw_map: Option<HashMap<String, String>> = value.as_ref().map(|m| {
+                m.iter()
+                    .map(|(k, v)| {
+                        (
+                            format!("{k:#x}"),
+                            format!("0x{}", hex::encode(v.to_big_endian())),
+                        )
+                    })
+                    .collect()
+            });
+            raw_map.serialize(serializer)
+        }
+
+        pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<HashMap<H256, U256>>, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            let raw_map: Option<HashMap<String, String>> = Deserialize::deserialize(deserializer)?;
+            let Some(m) = raw_map else {
+                return Ok(None);
+            };
+
+            m.into_iter()
+                .map(|(k, v)| {
+                    let key_deser = k.into_deserializer();
+                    let val_deser = v.into_deserializer();
+
+                    let key = H256::deserialize(key_deser)?;
+                    let value = super::super::u256::deser_hex_str(val_deser)?;
+                    Ok(Some((key, value)))
+                })
+                .collect()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -134,6 +134,27 @@ impl GeneralizedDatabase {
         Ok(value)
     }
 
+    /// Gets storage slot
+    pub fn get_storage_value(
+        &mut self,
+        address: Address,
+        key: H256,
+    ) -> Result<U256, InternalError> {
+        if let Some(account) = self.current_accounts_state.get(&address) {
+            if let Some(value) = account.storage.get(&key) {
+                return Ok(*value);
+            }
+            // If the account was destroyed and then created then we cannot rely on the DB to obtain storage values
+            if account.status == AccountStatus::DestroyedModified {
+                return Ok(U256::zero());
+            }
+        } else {
+            // When requesting storage of an account we should've previously requested and cached the account
+            return Err(InternalError::AccountNotFound);
+        }
+        self.get_value_from_database(address, key)
+    }
+
     /// Gets the transaction backup, if it exists.
     /// It only works if the `BackupHook` was enabled during the transaction execution.
     pub fn get_tx_backup(&self) -> Result<CallFrameBackup, InternalError> {
@@ -487,25 +508,10 @@ impl<'a> VM<'a> {
         address: Address,
         key: H256,
     ) -> Result<U256, InternalError> {
-        if let Some(account) = self.db.current_accounts_state.get(&address) {
-            if let Some(value) = account.storage.get(&key) {
-                return Ok(*value);
-            }
-            // If the account was destroyed and then created then we cannot rely on the DB to obtain storage values
-            if account.status == AccountStatus::DestroyedModified {
-                return Ok(U256::zero());
-            }
-        } else {
-            // When requesting storage of an account we should've previously requested and cached the account
-            return Err(InternalError::AccountNotFound);
-        }
-
-        let value = self.db.get_value_from_database(address, key)?;
-
+        let value = self.db.get_storage_value(address, key)?;
         // Update the account with the fetched value
         let account = self.get_account_mut(address)?;
         account.storage.insert(key, value);
-
         Ok(value)
     }
 

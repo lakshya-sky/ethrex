@@ -1,4 +1,6 @@
-use crate::{Address, H256, U256};
+use crate::{Address, EcdsaError, H256, U256};
+use bytes::Bytes;
+use ethereum_types::Signature;
 use ethrex_rlp::{
     decode::RLPDecode,
     encode::RLPEncode,
@@ -7,6 +9,8 @@ use ethrex_rlp::{
 };
 use rkyv::{Archive, Deserialize as RDeserialize, Serialize as RSerialize};
 use serde::{Deserialize, Serialize};
+
+use super::recover_address_from_message;
 /// A list of addresses and storage keys that the transaction plans to access.
 /// See [EIP-2930](https://eips.ethereum.org/EIPS/eip-2930)
 pub type AccessList = Vec<AccessListItem>;
@@ -49,6 +53,24 @@ pub struct AuthorizationTuple {
     #[serde(rename = "s")]
     #[rkyv(with = crate::rkyv_utils::U256Wrapper)]
     pub s_signature: U256,
+}
+
+impl AuthorizationTuple {
+    pub fn authority(&self) -> Result<Address, EcdsaError> {
+        let mut sig = [0u8; 65];
+        sig[..32].copy_from_slice(&self.r_signature.to_big_endian());
+        sig[32..64].copy_from_slice(&self.s_signature.to_big_endian());
+        sig[64] = self.y_parity.as_u32() as u8;
+
+        let mut buf = vec![0x05_u8];
+
+        Encoder::new(&mut buf)
+            .encode_field(&self.chain_id)
+            .encode_field(&self.address)
+            .encode_field(&self.nonce)
+            .finish();
+        recover_address_from_message(Signature::from(&sig), &Bytes::from(buf))
+    }
 }
 
 impl RLPEncode for AuthorizationTuple {

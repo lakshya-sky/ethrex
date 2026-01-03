@@ -3884,6 +3884,7 @@ dependencies = [
  "strum 0.27.2",
  "substrate-bn",
  "thiserror 2.0.17",
+ "tracing",
  "walkdir",
  "ziskos",
 ]
