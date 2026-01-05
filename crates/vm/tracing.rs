@@ -1,5 +1,5 @@
 use crate::backends::levm::LEVM;
-use ethrex_common::tracing::CallTraceFrame;
+use ethrex_common::tracing::{CallTraceFrame, PrestateTracerConfig, PrestateTracerResult};
 use ethrex_common::types::Block;
 
 use crate::{Evm, EvmError};
@@ -32,6 +32,27 @@ impl Evm {
             with_log,
             self.vm_type,
         )
+    }
+
+    /// Runs a single tx with the prestate tracer and outputs its trace.
+    /// Assumes that the received state already contains changes from previous blocks and other
+    /// transactions within its block.
+    /// Wraps LEVM::trace_tx_prestates depending on the feature.
+    pub fn trace_tx_prestates(
+        &mut self,
+        block: &Block,
+        tx_index: usize,
+        tracer_config: PrestateTracerConfig,
+    ) -> Result<PrestateTracerResult, EvmError> {
+        let tx = block
+            .body
+            .transactions
+            .get(tx_index)
+            .ok_or(EvmError::Custom(
+                "Missing Transaction for Trace".to_string(),
+            ))?;
+
+        LEVM::trace_tx_prestates(&mut self.db, &block.header, tx, tracer_config, self.vm_type)
     }
 
     /// Reruns the given block, saving the changes on the state, doesn't output any results or receipts.

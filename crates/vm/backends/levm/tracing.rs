@@ -1,10 +1,10 @@
 use ethrex_common::{
-    tracing::CallTraceFrame,
+    tracing::{CallTraceFrame, PrestateTracerConfig, PrestateTracerResult},
     types::{Block, BlockHeader, Transaction},
 };
 use ethrex_levm::{
     db::gen_db::GeneralizedDatabase,
-    tracing::LevmCallTracer,
+    tracing::{LevmCallTracer, PrestateTracer},
     vm::{VM, VMType},
 };
 use std::cell::RefCell;
@@ -75,5 +75,33 @@ impl LEVM {
 
         // We only return the top call because a transaction only has one call with subcalls
         Ok(callframe)
+    }
+
+    /// Run transaction with PrestateTracer activated.
+    pub fn trace_tx_prestates(
+        db: &mut GeneralizedDatabase,
+        block_header: &BlockHeader,
+        tx: &Transaction,
+        tracer_config: PrestateTracerConfig,
+        vm_type: VMType,
+    ) -> Result<PrestateTracerResult, EvmError> {
+        let env = Self::setup_env(
+            tx,
+            tx.sender().map_err(|error| {
+                EvmError::Transaction(format!("Couldn't recover addresses with error: {error}"))
+            })?,
+            block_header,
+            db,
+            vm_type,
+        )?;
+        let tracer = Rc::new(RefCell::new(PrestateTracer::new(tracer_config)));
+        let mut vm = VM::new(env, db, tx, tracer.clone(), vm_type)?;
+
+        vm.execute()?;
+
+        let result = tracer.borrow().get_result().map_err(EvmError::Custom)?;
+
+        // We only return the top call because a transaction only has one call with subcalls
+        Ok(result)
     }
 }

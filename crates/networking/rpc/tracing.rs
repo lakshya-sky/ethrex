@@ -3,6 +3,8 @@ use std::time::Duration;
 use ethrex_common::H256;
 use ethrex_common::serde_utils;
 use ethrex_common::tracing::CallTraceFrame;
+use ethrex_common::tracing::PrestateTracerConfig;
+use ethrex_common::tracing::PrestateTracerResult;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -43,6 +45,7 @@ struct TraceConfig {
 enum TracerType {
     #[default]
     CallTracer,
+    PrestateTracer,
 }
 
 #[derive(Deserialize, Default)]
@@ -120,6 +123,19 @@ impl RpcHandler for TraceTransactionRequest {
                     .map_err(|err| RpcErr::Internal(err.to_string()))?;
                 Ok(serde_json::to_value(call_trace)?)
             }
+            TracerType::PrestateTracer => {
+                let config = if let Some(value) = &self.trace_config.tracer_config {
+                    serde_json::from_value(value.clone())?
+                } else {
+                    PrestateTracerConfig::default()
+                };
+                let prestate_account = context
+                    .blockchain
+                    .trace_transaction_prestates(self.tx_hash, reexec, timeout, config)
+                    .await
+                    .map_err(|err| RpcErr::Internal(err.to_string()))?;
+                Ok(serde_json::to_value(prestate_account)?)
+            }
         }
     }
 }
@@ -183,6 +199,21 @@ impl RpcHandler for TraceBlockByNumberRequest {
                     .map_err(|err| RpcErr::Internal(err.to_string()))?;
                 let block_trace: BlockTrace<CallTraceFrame> =
                     call_traces.into_iter().map(Into::into).collect();
+                Ok(serde_json::to_value(block_trace)?)
+            }
+            TracerType::PrestateTracer => {
+                let config = if let Some(value) = &self.trace_config.tracer_config {
+                    serde_json::from_value(value.clone())?
+                } else {
+                    PrestateTracerConfig::default()
+                };
+                let prestate_accounts = context
+                    .blockchain
+                    .trace_block_prestates(block, reexec, timeout, config)
+                    .await
+                    .map_err(|err| RpcErr::Internal(err.to_string()))?;
+                let block_trace: BlockTrace<PrestateTracerResult> =
+                    prestate_accounts.into_iter().map(Into::into).collect();
                 Ok(serde_json::to_value(block_trace)?)
             }
         }
