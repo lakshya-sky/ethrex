@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Fee token - Ethrex</title>
+        <title>Upgrades - Ethrex</title>
 
 
         <!-- Custom HTML head -->
@@ -237,121 +237,74 @@
 }
 
 </style>
-<h1 id="fee-token-overview"><a class="header" href="#fee-token-overview">Fee Token Overview</a></h1>
-<p>Ethrex lets L2 transactions pay execution costs with an ERC-20 instead of ETH. A fee-token-enabled transaction behaves like a normal call or transfer, but the sequencer locks fees in the ERC-20 and distributes them (sender refund, coinbase priority fee, base-fee vault, operator vault, L1 data fee) using the hooks in <code>l2_hook.rs</code>.</p>
-<p>Key requirements:</p>
+<h1 id="upgrades"><a class="header" href="#upgrades">Upgrades</a></h1>
+<h2 id="from-v7-to-v8"><a class="header" href="#from-v7-to-v8">From v7 to v8</a></h2>
+<h3 id="database-migration-local-node"><a class="header" href="#database-migration-local-node">Database migration (local node)</a></h3>
+<p>This migration applies to the L2 node database only (SQL-backed store). It does not change any on-chain contracts.</p>
+<p>The <code>messages</code> table was renamed to <code>l1_messages</code>. Copy the data and then remove the old table:</p>
+<pre><code class="language-sql">INSERT INTO l1_messages
+SELECT *
+FROM messages;
+</code></pre>
+<p>Then delete the <code>messages</code> table.</p>
+<h2 id="from-v8-to-v9"><a class="header" href="#from-v8-to-v9">From v8 to v9</a></h2>
+<h3 id="timelock-upgrade-l1-contracts"><a class="header" href="#timelock-upgrade-l1-contracts">Timelock upgrade (L1 contracts)</a></h3>
+<p>From ethrex v9 onwards, the Timelock contract manages access to the OnChainProposer (OCP). The OCP owner becomes the Timelock, and the deprecated <code>authorizedSequencerAddresses</code> mapping is replaced by Timelock roles.</p>
+<h4 id="what-changes"><a class="header" href="#what-changes">What changes</a></h4>
 <ul>
-<li>The token must implement <code>IFeeToken</code> (see <code>crates/l2/contracts/src/example/FeeToken.sol</code>), which extends <code>IERC20L2</code> and adds the <code>lockFee</code> / <code>payFee</code> entry points consumed by the sequencer.</li>
-<li><code>lockFee</code> must reserve funds when invoked by the l2 bridge (the L2 bridge/<code>COMMON_BRIDGE_L2_ADDRESS</code>), and <code>payFee</code> must release or burn those funds when the transaction finishes.</li>
-<li>The token address must be registered in the L2 <code>FeeTokenRegistry</code> system contract (<code>0x…fffc</code>). Registration happens through the L1 <code>CommonBridge</code> by calling <code>registerNewFeeToken(address)</code>; only the bridge owner can do this, and the call queues a privileged transaction that the sequencer forces on L2. Likewise, <code>unregisterFeeToken(address)</code> removes it.</li>
+<li>Sequencer permissions move to Timelock roles (<code>SEQUENCER</code>).</li>
+<li>Commit and verify transactions must target the Timelock, not the OCP.</li>
+<li>Governance and Security Council accounts control upgrades and emergency actions via the Timelock.</li>
 </ul>
-<p>Fee token ratios are also updated through the same privileged transaction path (deposits from L1 to L2). This is because we want the changes to be done through the L1, and via an owner that we want to be the same as the owner in the L1 bridge.</p>
-<h3 id="minimal-contract-surface"><a class="header" href="#minimal-contract-surface">Minimal Contract Surface</a></h3>
-<pre><code class="language-solidity">contract FeeToken is ERC20, IFeeToken {
-    address internal constant BRIDGE = 0x000000000000000000000000000000000000FFFF;
-
-    ...
-
-    modifier onlyBridge() {
-        require(msg.sender == BRIDGE, "only bridge");
-        _;
-    }
-    function lockFee(address payer, uint256 amount)
-        external
-        override(IFeeToken)
-        onlyBridge
-    {
-        _transfer(payer, BRIDGE, amount);
-    }
-
-    function payFee(address receiver, uint256 amount)
-        external
-        override(IFeeToken)
-        onlyBridge
-    {
-        if (receiver == address(0)) {
-            _burn(BRIDGE, amount);
-        } else {
-            _transfer(BRIDGE, receiver, amount);
-        }
-    }
-}
+<h4 id="1-deploy-timelock-proxy--implementation"><a class="header" href="#1-deploy-timelock-proxy--implementation">1) Deploy Timelock (proxy + implementation)</a></h4>
+<p>Deploy a Timelock proxy and implementation using your standard UUPS deployment flow. Record the proxy address; that is the address you will initialize and use later.</p>
+<h4 id="2-initialize-timelock"><a class="header" href="#2-initialize-timelock">2) Initialize Timelock</a></h4>
+<p>Call the Timelock initializer on the proxy:</p>
+<pre><code>initialize(uint256 minDelay,address[] sequencers,address governance,address securityCouncil,address onChainProposer)
 </code></pre>
-<p>For deployment and operator steps, see <a href="../deployment/fee_token.html">Deploying a Fee Token</a>.</p>
-<h2 id="user-workflow"><a class="header" href="#user-workflow">User Workflow</a></h2>
-<p>Once a token is registered, users can submit fee-token transactions:</p>
-<ol>
-<li>Instantiate an <code>EthClient</code> connected to L2 and create a signer.</li>
-<li>Build a <code>TxType::FeeToken</code> transaction with <code>build_generic_tx</code>, setting <code>Overrides::fee_token = Some(&lt;token&gt;)</code> and the desired <code>value</code> / calldata.</li>
-<li>Send the transaction with <code>send_generic_transaction</code> and wait for the receipt.</li>
-</ol>
-<p>Fee locking and distribution happen automatically inside <code>l2_hook.rs</code>.</p>
-<h3 id="minimal-cargotoml"><a class="header" href="#minimal-cargotoml">Minimal <code>Cargo.toml</code></a></h3>
-<pre><code class="language-toml">[package]
-name = "fee-token-client"
-version = "0.1.0"
-edition = "2024"
-
-[dependencies]
-anyhow = "1.0.86"
-hex = "0.4.3"
-secp256k1 = { version = "0.30.0", default-features = false, features = ["global-context", "recovery", "rand"] }
-tokio = { version = "1.41.1", features = ["macros", "rt-multi-thread"] }
-url = { version = "2.5.4", features = ["serde"] }
-ethrex_l2_sdk = { package = "ethrex-sdk", git = "https://github.com/lambdaclass/ethrex", tag = "v6.0.0" }
-ethrex-rpc = { git = "https://github.com/lambdaclass/ethrex", tag = "v6.0.0" }
-ethrex-common = { git = "https://github.com/lambdaclass/ethrex", tag = "v6.0.0" }
-ethrex-l2-rpc = { git = "https://github.com/lambdaclass/ethrex", tag = "v6.0.0" }
+<ul>
+<li><code>sequencers</code> should include the L1 committer and proof sender addresses (and any other accounts that should commit or verify).</li>
+<li><code>securityCouncil</code> is typically the current OCP owner (ideally a multisig).</li>
+<li><code>governance</code> is the account that will schedule and execute timelocked upgrades.</li>
+</ul>
+<h4 id="3-transfer-ocp-ownership-to-timelock"><a class="header" href="#3-transfer-ocp-ownership-to-timelock">3) Transfer OCP ownership to Timelock</a></h4>
+<p>From the current OCP owner, transfer ownership with <code>transferOwnership(address)</code>.</p>
+<p>Then accept ownership from the Timelock:</p>
+<ul>
+<li>Normal path: schedule and execute <code>acceptOwnership()</code> through the Timelock (respects <code>minDelay</code>).</li>
+<li>Emergency path: the Security Council can call <code>emergencyExecute</code> on the Timelock with calldata for <code>acceptOwnership()</code> to accept immediately.</li>
+</ul>
+<p>Note: <code>acceptOwnership()</code> must be executed by the Timelock (the pending owner), so it cannot be called directly from an EOA.</p>
+<h4 id="4-configure-the-l2-node-to-use-timelock"><a class="header" href="#4-configure-the-l2-node-to-use-timelock">4) Configure the L2 node to use Timelock</a></h4>
+<p>This is required because the sequencer can no longer call the OCP directly once the Timelock is the owner. Set the Timelock address so commit and verify calls target the Timelock:</p>
+<ul>
+<li>CLI flag: <code>--l1.timelock-address &lt;TIMELOCK_PROXY_ADDRESS&gt;</code></li>
+<li>Env var: <code>ETHREX_TIMELOCK_ADDRESS=&lt;TIMELOCK_PROXY_ADDRESS&gt;</code></li>
+</ul>
+<p>The committer requires this address for non-based deployments, and the proof sender/verifier will use it when present.</p>
+<p>Do this before restarting the sequencer after the ownership transfer. If the node keeps targeting the OCP after the transfer, commit/verify calls will revert (<code>onlyOwner</code>). If you point to the Timelock before the transfer, the Timelock will forward but the OCP will still reject it because the Timelock is not the owner yet.</p>
+<h4 id="5-verify-the-migration"><a class="header" href="#5-verify-the-migration">5) Verify the migration</a></h4>
+<ul>
+<li>OCP <code>owner()</code> returns the Timelock address.</li>
+<li>Sequencer addresses return <code>true</code> for <code>hasRole(SEQUENCER, &lt;addr&gt;)</code> on the Timelock.</li>
+<li>The L2 node logs show commit/verify txs sent to the Timelock.</li>
+</ul>
+<h3 id="database-migration-local-node-1"><a class="header" href="#database-migration-local-node-1">Database migration (local node)</a></h3>
+<p>This migration applies to the L2 node database only (SQL-backed store). It does not change any on-chain contracts.</p>
+<p>The <code>balance_diffs</code> table added a new <code>value_per_token</code> column of type <code>BLOB</code>:</p>
+<pre><code class="language-sql">ALTER TABLE balance_diffs
+ADD COLUMN value_per_token BLOB;
 </code></pre>
-<pre><pre class="playground"><code class="language-rust edition2024">use anyhow::Result;
-use ethrex_l2_sdk::{build_generic_tx, send_generic_transaction};
-use ethrex_rpc::clients::eth::{EthClient, Overrides};
-use ethrex_common::types::TxType;
-use ethrex_common::{Address, Bytes, U256};
-use ethrex_l2_sdk::wait_for_transaction_receipt;
-use ethrex_l2_rpc::signer::{LocalSigner, Signer};
-use secp256k1::SecretKey;
-use url::Url;
-
-#[tokio::main]
-async fn main() -&gt; Result&lt;()&gt; {
-    // 1. Connect and create the signer.
-    let l2 = EthClient::new(Url::parse("http://localhost:1729")?)?;
-    let private_key = SecretKey::from_slice(&amp;hex::decode("&lt;hex-private-key&gt;")?)?;
-    let signer = Signer::Local(LocalSigner::new(private_key));
-
-    // 2. Build the fee-token transaction.
-    let fee_token: Address = "&lt;fee-token-address&gt;".parse()?;
-    let recipient: Address = "&lt;recipient-address&gt;".parse()?;
-    let mut tx = build_generic_tx(
-        &amp;l2,
-        TxType::FeeToken,
-        recipient,
-        signer.address(),
-        Bytes::default(),
-        Overrides {
-            fee_token: Some(fee_token),
-            value: Some(U256::from(100_000u64)),
-            ..Default::default()
-        },
-    )
-    .await?;
-
-    // 3. Send and wait for the receipt.
-    let tx_hash = send_generic_transaction(&amp;l2, tx, &amp;signer).await?;
-    wait_for_transaction_receipt(tx_hash, &amp;l2, 100).await?;
-    Ok(())
-}</code></pre></pre>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="../../l2/fundamentals/exit_window.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="../../l2/deployment/fee_token.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
-                            <a rel="next prefetch" href="../../l2/fundamentals/shared_bridge.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="../../l2/deployment/prover/index.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <i class="fa fa-angle-right"></i>
                             </a>
 
@@ -361,11 +314,11 @@ async fn main() -&gt; Result&lt;()&gt; {
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="../../l2/fundamentals/exit_window.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="../../l2/deployment/fee_token.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <i class="fa fa-angle-left"></i>
                     </a>
 
-                    <a rel="next prefetch" href="../../l2/fundamentals/shared_bridge.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="../../l2/deployment/prover/index.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <i class="fa fa-angle-right"></i>
                     </a>
             </nav>
