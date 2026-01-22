@@ -3854,7 +3854,7 @@ struct StorageTaskResult {
 <li>Downloading the leaves of the state (account states) and storage tries (storage slots)</li>
 <li>Healing (reconciling the state).</li>
 </ul>
-<p>Healing is needed because the leaves can be downloaded from disparate blocks, and to "fix" only the nodes of the trie that changed between nodes. <a href="https://www.notion.so/lambdaclass/Healing-Algorithm-Explanation-and-Documentation-269b9462471380e4a275edd77c8b5dc5?source=copy_link">In depth explanation</a>.</p>
+<p>Healing is needed because the leaves can be downloaded from disparate blocks, and to "fix" only the nodes of the trie that changed between nodes. <a href="internal/l1/./healing.html">In depth explanation</a>.</p>
 <p>We were working under the assumption that accounts were never deleted, so we adopted some specific optimizations. During the state healing stage every account that was "healed" was added into a list of accounts that needed to be checked for storage healing. When healing the storage of those accounts the algorithm requested their account states and expected them to be there to see if they had any storage that needed healing. This lead to the storage healing threads panicking when they failed to find the account that was deleted.</p>
 <p>During the test of snapsync mainnet, we started seeing that storage healing was panicking, so we added some logs to see what account hashes were being accessed and when where they healed vs accessed. Exploring the database we saw that the offending account was present in a previous state and missing in the next one, with the corresponding merkle proof matching the block state root. Originally we suspected a reorg, but searching the blocks we saw they were finalized in the chain.</p>
 <p>The account state present indicated an account with nonce 0, no code and no storage but with balance. We didn't have access to the account address, as the state trie only stores the hash of the account address so we turned to another strategy to find it. Using <a href="https://docs.etherscan.io/api-endpoints/accounts#get-internal-transactions-by-block-range">etherscan's API</a> allowing to search internal transactions from a block range, we explored the range where we knew the account existed in the state trie. Hashing all of the <code>to</code> and <code>from</code> of the transactions <a href="https://etherscan.io/tx/0xf23b2c233410141cda0c6d24f21f0074c494565bfd54ce008c5ce1b30b23b0da">we found the transaction</a> that deleted the account with a self destruct. Despite the account becoming a contract just during that transaction, we saw that 900 blocks before it was <a href="https://etherscan.io/tx/0xbc9f52ba45a6915878318be944cb20bd3bb1bbf36b2ce8ff5e6575ce1689f1b6">created with a transfer</a>. The result of the self destruct was the transfer of 0.044 ETH from one account to another.</p>
@@ -4096,6 +4096,144 @@ algorithm to receive empty buffers and the writing task clears the
 buffer and sends it back through the channels.</p>
 <p>These tasks are executed using a custom thread pool defined in
 <code>/crates/concurrency/concurrency.rs</code></p>
+<div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
+<style>
+.mdbook-alerts {
+  padding: 8px 16px;
+  margin-bottom: 16px;
+  border-left: 0.25em solid var(--mdbook-alerts-color);
+}
+
+.mdbook-alerts > *:first-child {
+  margin-top: 0;
+}
+
+.mdbook-alerts > *:last-child {
+  margin-bottom: 0;
+}
+
+.mdbook-alerts-title {
+  display: flex;
+  font-weight: 600;
+  align-items: center;
+  line-height: 1;
+  color: var(--mdbook-alerts-color);
+  text-transform: capitalize;
+}
+
+.mdbook-alerts-icon {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  margin-right: 0.2em;
+  background-color: currentColor;
+  -webkit-mask: no-repeat center / 100%;
+  mask: no-repeat center / 100%;
+  -webkit-mask-image: var(--mdbook-alerts-icon);
+  mask-image: var(--mdbook-alerts-icon);
+}
+
+.mdbook-alerts-note {
+  --mdbook-alerts-color: rgb(9, 105, 218);
+  /* https://icon-sets.iconify.design/material-symbols/info-outline-rounded/ */
+  --mdbook-alerts-icon: url('data:image/svg+xml,%3Csvg xmlns="http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg" width="24" height="24" viewBox="0 0 24 24"%3E%3Cpath fill="currentColor" d="M12 17q.425 0 .713-.288T13 16v-4q0-.425-.288-.712T12 11q-.425 0-.712.288T11 12v4q0 .425.288.713T12 17m0-8q.425 0 .713-.288T13 8q0-.425-.288-.712T12 7q-.425 0-.712.288T11 8q0 .425.288.713T12 9m0 13q-2.075 0-3.9-.788t-3.175-2.137q-1.35-1.35-2.137-3.175T2 12q0-2.075.788-3.9t2.137-3.175q1.35-1.35 3.175-2.137T12 2q2.075 0 3.9.788t3.175 2.137q1.35 1.35 2.138 3.175T22 12q0 2.075-.788 3.9t-2.137 3.175q-1.35 1.35-3.175 2.138T12 22m0-2q3.35 0 5.675-2.325T20 12q0-3.35-2.325-5.675T12 4Q8.65 4 6.325 6.325T4 12q0 3.35 2.325 5.675T12 20m0-8"%2F%3E%3C%2Fsvg%3E');
+}
+
+.mdbook-alerts-tip {
+  --mdbook-alerts-color: rgb(26, 127, 55);
+  /* https://icon-sets.iconify.design/material-symbols/lightbulb-outline-rounded/ */
+  --mdbook-alerts-icon: url('data:image/svg+xml,%3Csvg xmlns="http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg" width="24" height="24" viewBox="0 0 24 24"%3E%3Cpath fill="currentColor" d="M12 22q-.825 0-1.412-.587T10 20h4q0 .825-.587 1.413T12 22m-3-3q-.425 0-.712-.288T8 18q0-.425.288-.712T9 17h6q.425 0 .713.288T16 18q0 .425-.288.713T15 19zm-.75-3q-1.725-1.025-2.738-2.75T4.5 9.5q0-3.125 2.188-5.312T12 2q3.125 0 5.313 2.188T19.5 9.5q0 2.025-1.012 3.75T15.75 16zm.6-2h6.3q1.125-.8 1.738-1.975T17.5 9.5q0-2.3-1.6-3.9T12 4Q9.7 4 8.1 5.6T6.5 9.5q0 1.35.613 2.525T8.85 14M12 14"%2F%3E%3C%2Fsvg%3E');
+}
+
+.mdbook-alerts-important {
+  --mdbook-alerts-color: rgb(130, 80, 223);
+  /* https://icon-sets.iconify.design/material-symbols/chat-info-outline-rounded/ */
+  --mdbook-alerts-icon: url('data:image/svg+xml,%3Csvg xmlns="http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg" width="24" height="24" viewBox="0 0 24 24"%3E%3Cpath fill="currentColor" d="M12 7q.425 0 .713-.288T13 6q0-.425-.288-.712T12 5q-.425 0-.712.288T11 6q0 .425.288.713T12 7m0 8q.425 0 .713-.288T13 14v-4q0-.425-.288-.712T12 9q-.425 0-.712.288T11 10v4q0 .425.288.713T12 15m-6 3l-2.3 2.3q-.475.475-1.088.213T2 19.575V4q0-.825.588-1.412T4 2h16q.825 0 1.413.588T22 4v12q0 .825-.587 1.413T20 18zm-.85-2H20V4H4v13.125zM4 16V4z"%2F%3E%3C%2Fsvg%3E');
+}
+
+.mdbook-alerts-warning {
+  --mdbook-alerts-color: rgb(154, 103, 0);
+  /* https://icon-sets.iconify.design/material-symbols/warning-outline-rounded/ */
+  --mdbook-alerts-icon: url('data:image/svg+xml,%3Csvg xmlns="http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg" width="24" height="24" viewBox="0 0 24 24"%3E%3Cpath fill="currentColor" d="M2.725 21q-.275 0-.5-.137t-.35-.363q-.125-.225-.137-.488t.137-.512l9.25-16q.15-.25.388-.375T12 3q.25 0 .488.125t.387.375l9.25 16q.15.25.138.513t-.138.487q-.125.225-.35.363t-.5.137zm1.725-2h15.1L12 6zM12 18q.425 0 .713-.288T13 17q0-.425-.288-.712T12 16q-.425 0-.712.288T11 17q0 .425.288.713T12 18m0-3q.425 0 .713-.288T13 14v-3q0-.425-.288-.712T12 10q-.425 0-.712.288T11 11v3q0 .425.288.713T12 15m0-2.5"%2F%3E%3C%2Fsvg%3E');
+}
+
+.mdbook-alerts-caution {
+  --mdbook-alerts-color: rgb(207, 34, 46);
+  /* https://icon-sets.iconify.design/material-symbols/brightness-alert-outline-rounded/ */
+  --mdbook-alerts-icon: url('data:image/svg+xml,%3Csvg xmlns="http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg" width="24" height="24" viewBox="0 0 24 24"%3E%3Cpath fill="currentColor" d="M12 17q.425 0 .713-.288T13 16q0-.425-.288-.712T12 15q-.425 0-.712.288T11 16q0 .425.288.713T12 17m0-4q.425 0 .713-.288T13 12V8q0-.425-.288-.712T12 7q-.425 0-.712.288T11 8v4q0 .425.288.713T12 13m-3.35 7H6q-.825 0-1.412-.587T4 18v-2.65L2.075 13.4q-.275-.3-.425-.662T1.5 12q0-.375.15-.737t.425-.663L4 8.65V6q0-.825.588-1.412T6 4h2.65l1.95-1.925q.3-.275.663-.425T12 1.5q.375 0 .738.15t.662.425L15.35 4H18q.825 0 1.413.588T20 6v2.65l1.925 1.95q.275.3.425.663t.15.737q0 .375-.15.738t-.425.662L20 15.35V18q0 .825-.587 1.413T18 20h-2.65l-1.95 1.925q-.3.275-.662.425T12 22.5q-.375 0-.737-.15t-.663-.425zm.85-2l2.5 2.5l2.5-2.5H18v-3.5l2.5-2.5L18 9.5V6h-3.5L12 3.5L9.5 6H6v3.5L3.5 12L6 14.5V18zm2.5-6"%2F%3E%3C%2Fsvg%3E');
+}
+
+</style>
+<h1 id="healing-algorithm-explanation-and-documentation-before-path-based"><a class="header" href="#healing-algorithm-explanation-and-documentation-before-path-based">Healing Algorithm Explanation and Documentation (Before Path Based)</a></h1>
+<p>Healing is the last step of Snap Sync. Snap begins the downloading of the state and storage tries by downloading the leaves (account states and storage slots), and from those leaves we reconstruct the intermediate nodes (branches and extension). Afterwards we may be left with a malformed trie, as that step will resume the download of leaves with a new state root if the old one times out.</p>
+<p>The purpose of the healing algorithm is “heal” that trie so that it ends up in a consistent state.</p>
+<h1 id="healing-conceptually"><a class="header" href="#healing-conceptually">Healing Conceptually</a></h1>
+<p>The malformed trie is going to have large sections of the trie which are in a correct state, as we had all of the leaves in that sections and those accounts haven’t been modified in the blocks that happened concurrently to the snapsync algorithm.</p>
+<p><img src="internal/l1/healing/Example_1_Step_0.svg" alt="Image of a trie, where the root node is in red, indicating that it’s in an incorrect state. It points to two branches, one is correct and one was computed from faulty data, and such doesn’t exist in the latest block" /></p>
+<p>Example of a trie where 3 leaves where downloaded in block 1 and 1 was downloaded in block 2. The trie root is different from the state root of block 2, as one of the leaf nodes was modified in block 2.</p>
+<p>The algorithm attempts to rebuild the trie through downloading the missing nodes, starting from the top. If the node is present in the database that means that we have that and all of their child nodes present in the database. If not, we download the node and check if the children of the root are present, applying the algorithm recursively.</p>
+<p><img src="internal/l1/healing/Example_1_Step_1.svg" alt="Iteration 1 of algorithm" /></p>
+<p>Iteration 1 of algorithm</p>
+<p><img src="internal/l1/healing/Example_1_Step_2.svg" alt="Iteration 2 of algorithm" /></p>
+<p>Iteration 2 of algorithm</p>
+<p><img src="internal/l1/healing/Example_1_Step_3.svg" alt="Iteration 3 of algorithm" /></p>
+<p>Iteration 3 of algorithm</p>
+<p><img src="internal/l1/healing/Example_1_Step_4.svg" alt="Final state of trie after healing" /></p>
+<p>Final state of trie after healing</p>
+<h1 id="implementation-2"><a class="header" href="#implementation-2">Implementation</a></h1>
+<p>The algorithm is implemented in ethrex currently in <code>crates/networking/p2p/sync/state_healings.rs</code> and <code>crates/networking/p2p/sync/storage_healing.rs</code>. All of our code examples are from the account state trie.</p>
+<h3 id="api-1"><a class="header" href="#api-1">API</a></h3>
+<p>The API used is the ethereum capability snap/1, documented at https://github.com/ethereum/devp2p/blob/master/caps/snap.md and for healing the only method used is <code>GetTrieNodes</code>. This method allows us to ask our peers for nodes in a trie. We ask the nodes by <strong>path</strong> to the node, not by hash.</p>
+<pre><pre class="playground"><code class="language-rust edition2024"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub struct GetTrieNodes {    
+    pub id: u64,    
+    pub root_hash: H256,    
+    // [[acc_path, slot_path_1, slot_path_2,...]...]    
+    // The paths can be either full paths (hash) or 
+    // only the partial path (compact-encoded nibbles)    
+    pub paths: Vec&lt;Vec&lt;Bytes&gt;&gt;,    
+    pub bytes: u64,
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="staleness"><a class="header" href="#staleness">Staleness</a></h3>
+<p>The spec allows the nodes to stop responding if the request is older than 128 blocks. In that case, the response to the <code>GetTrieNodes</code> will be empty. As such, our algorithm checks periodically if the block is stale, and stops executing. In that scenario, we must be sure that the we leave the storage in a consistent state at any given time and doesn’t break our invariants.</p>
+<pre><pre class="playground"><code class="language-rust edition2024"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Current Staleness logic code
+// We check with a clock if we are stale        
+if !is_stale &amp;&amp; current_unix_time() &gt; staleness_timestamp {
+    info!("state healing is stale");            
+    is_stale = true;       
+}
+// We make sure that we have stored everything that we need to the database
+if is_stale &amp;&amp; nodes_to_heal.is_empty() &amp;&amp; inflight_tasks == 0 {
+  info!("Finished inflight tasks");            
+  db_joinset.join_all().await;            
+  break;
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="membatch"><a class="header" href="#membatch">Membatch</a></h3>
+<p>Currently, our algorithm has an invariant, which is that if we have a node in storage we have its and all of its children are present. Therefore, when we download for a node if some of it’s children are missing we can’t immediately store it on disk. Our implementation currently stores the nodes in temporary structure called membatch, which stores the node and how many of it’s children are missing. When a child gets stored, we reduce the counter of missing children of the parent. If that numbers reaches 0, we write the parent to the database.</p>
+<p>In code, the membatch is current <code>HashMap&lt;Nibbles, MembatchEntryValue&gt;</code> with the value being the following struct</p>
+<pre><pre class="playground"><code class="language-rust edition2024"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub struct MembatchEntryValue {
+    /// The node to be flushed into storage
+    node: Node,
+    /// How many of the nodes that are child of this are not in storage
+    children_not_in_storage_count: u64,
+    /// Which is the parent of this node
+    parent_path: Nibbles,
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="known-optimization-issues"><a class="header" href="#known-optimization-issues">Known Optimization Issues</a></h2>
+<ul>
+<li>Membatch gets cleared between iterations, while it could be preserved and the hash checked.</li>
+<li>When checking if a child is present in storage, we can also check if it’s in the membatch. If it is, we can skip that download and act like we have immediately downloaded that node.</li>
+<li>Membatch is currently a <code>HashMap</code>, a <code>BTreeMap</code> or other structures may be faster in real use.</li>
+<li>Storage healing receives as a parameter a list of accounts that need to be healed and it has get their state before it can run. Doing those reads could be more efficient.</li>
+</ul>
 <div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <style>
 .mdbook-alerts {
@@ -4898,7 +5036,11 @@ COMPILE_CONTRACTS=true cargo install --locked --path cmd/ethrex --bin ethrex --f
 
 </style>
 <h1 id="running-ethrex-in-aligned-mode"><a class="header" href="#running-ethrex-in-aligned-mode">Running Ethrex in Aligned Mode</a></h1>
-<p>This guide extends the <a href="l2/deployment/./overview.html">Deploy an L2 overview</a> and shows how to run an ethrex L2 with <strong>Aligned mode</strong> enabled. It assumes:</p>
+<p>This guide extends the <a href="l2/deployment/./overview.html">Deploy an L2 overview</a> and shows how to run an ethrex L2 with <strong>Aligned mode</strong> enabled.</p>
+<blockquote>
+<p><strong>For a comprehensive technical deep-dive into the Aligned integration architecture, see <a href="l2/deployment/../fundamentals/ethrex_l2_aligned_integration.html">Aligned Layer Integration</a>.</strong></p>
+</blockquote>
+<p>It assumes:</p>
 <ul>
 <li>
 <p>You already installed the <code>ethrex</code> binary to your <code>$PATH</code> (for example from the repo root with <code>cargo install --locked --path cmd/ethrex --bin ethrex --features l2,l2-sql --force</code>).</p>
@@ -5144,7 +5286,7 @@ INFO ethrex_l2::sequencer::l1_proof_verifier: Batches verified in OnChainPropose
 <h3 id="prover"><a class="header" href="#prover">Prover</a></h3>
 <ul>
 <li>Generates <code>Compressed</code> proofs instead of <code>Groth16</code>.</li>
-<li>Required because Aligned currently only accepts SP1 compressed proofs.</li>
+<li>Required because Aligned accepts compressed proofs (both SP1 and RISC0).</li>
 </ul>
 <h3 id="proof-sender"><a class="header" href="#proof-sender">Proof Sender</a></h3>
 <ul>
@@ -5456,7 +5598,7 @@ rex l2 withdraw 111111111111111111 0x41443995d9eb6c6d6df51e55db2b188b12fe0f80d32
 	--bridge-owner 0x4417092b70a3e5f10dc504d0947dd256b965fc62 \
 	--deposit-rich \
 	--private-keys-file-path ../../fixtures/keys/private_keys_l1.txt \
-	--genesis-l1-path ../../fixtures/genesis/l1-dev.json \
+	--genesis-l1-path ../../fixtures/genesis/l1.json \
 	--genesis-l2-path ../../fixtures/genesis/l2_2.json \
     --randomize-contract-deployment \
     --router.address &lt;ROUTER_ADDRESS&gt;
@@ -6512,6 +6654,363 @@ cd ethrex/metrics
 <p><strong>Example</strong></p>
 <pre><code>curl -X GET http://localhost:5555/committer/stop
 </code></pre>
+<div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
+<style>
+.mdbook-alerts {
+  padding: 8px 16px;
+  margin-bottom: 16px;
+  border-left: 0.25em solid var(--mdbook-alerts-color);
+}
+
+.mdbook-alerts > *:first-child {
+  margin-top: 0;
+}
+
+.mdbook-alerts > *:last-child {
+  margin-bottom: 0;
+}
+
+.mdbook-alerts-title {
+  display: flex;
+  font-weight: 600;
+  align-items: center;
+  line-height: 1;
+  color: var(--mdbook-alerts-color);
+  text-transform: capitalize;
+}
+
+.mdbook-alerts-icon {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  margin-right: 0.2em;
+  background-color: currentColor;
+  -webkit-mask: no-repeat center / 100%;
+  mask: no-repeat center / 100%;
+  -webkit-mask-image: var(--mdbook-alerts-icon);
+  mask-image: var(--mdbook-alerts-icon);
+}
+
+.mdbook-alerts-note {
+  --mdbook-alerts-color: rgb(9, 105, 218);
+  /* https://icon-sets.iconify.design/material-symbols/info-outline-rounded/ */
+  --mdbook-alerts-icon: url('data:image/svg+xml,%3Csvg xmlns="http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg" width="24" height="24" viewBox="0 0 24 24"%3E%3Cpath fill="currentColor" d="M12 17q.425 0 .713-.288T13 16v-4q0-.425-.288-.712T12 11q-.425 0-.712.288T11 12v4q0 .425.288.713T12 17m0-8q.425 0 .713-.288T13 8q0-.425-.288-.712T12 7q-.425 0-.712.288T11 8q0 .425.288.713T12 9m0 13q-2.075 0-3.9-.788t-3.175-2.137q-1.35-1.35-2.137-3.175T2 12q0-2.075.788-3.9t2.137-3.175q1.35-1.35 3.175-2.137T12 2q2.075 0 3.9.788t3.175 2.137q1.35 1.35 2.138 3.175T22 12q0 2.075-.788 3.9t-2.137 3.175q-1.35 1.35-3.175 2.138T12 22m0-2q3.35 0 5.675-2.325T20 12q0-3.35-2.325-5.675T12 4Q8.65 4 6.325 6.325T4 12q0 3.35 2.325 5.675T12 20m0-8"%2F%3E%3C%2Fsvg%3E');
+}
+
+.mdbook-alerts-tip {
+  --mdbook-alerts-color: rgb(26, 127, 55);
+  /* https://icon-sets.iconify.design/material-symbols/lightbulb-outline-rounded/ */
+  --mdbook-alerts-icon: url('data:image/svg+xml,%3Csvg xmlns="http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg" width="24" height="24" viewBox="0 0 24 24"%3E%3Cpath fill="currentColor" d="M12 22q-.825 0-1.412-.587T10 20h4q0 .825-.587 1.413T12 22m-3-3q-.425 0-.712-.288T8 18q0-.425.288-.712T9 17h6q.425 0 .713.288T16 18q0 .425-.288.713T15 19zm-.75-3q-1.725-1.025-2.738-2.75T4.5 9.5q0-3.125 2.188-5.312T12 2q3.125 0 5.313 2.188T19.5 9.5q0 2.025-1.012 3.75T15.75 16zm.6-2h6.3q1.125-.8 1.738-1.975T17.5 9.5q0-2.3-1.6-3.9T12 4Q9.7 4 8.1 5.6T6.5 9.5q0 1.35.613 2.525T8.85 14M12 14"%2F%3E%3C%2Fsvg%3E');
+}
+
+.mdbook-alerts-important {
+  --mdbook-alerts-color: rgb(130, 80, 223);
+  /* https://icon-sets.iconify.design/material-symbols/chat-info-outline-rounded/ */
+  --mdbook-alerts-icon: url('data:image/svg+xml,%3Csvg xmlns="http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg" width="24" height="24" viewBox="0 0 24 24"%3E%3Cpath fill="currentColor" d="M12 7q.425 0 .713-.288T13 6q0-.425-.288-.712T12 5q-.425 0-.712.288T11 6q0 .425.288.713T12 7m0 8q.425 0 .713-.288T13 14v-4q0-.425-.288-.712T12 9q-.425 0-.712.288T11 10v4q0 .425.288.713T12 15m-6 3l-2.3 2.3q-.475.475-1.088.213T2 19.575V4q0-.825.588-1.412T4 2h16q.825 0 1.413.588T22 4v12q0 .825-.587 1.413T20 18zm-.85-2H20V4H4v13.125zM4 16V4z"%2F%3E%3C%2Fsvg%3E');
+}
+
+.mdbook-alerts-warning {
+  --mdbook-alerts-color: rgb(154, 103, 0);
+  /* https://icon-sets.iconify.design/material-symbols/warning-outline-rounded/ */
+  --mdbook-alerts-icon: url('data:image/svg+xml,%3Csvg xmlns="http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg" width="24" height="24" viewBox="0 0 24 24"%3E%3Cpath fill="currentColor" d="M2.725 21q-.275 0-.5-.137t-.35-.363q-.125-.225-.137-.488t.137-.512l9.25-16q.15-.25.388-.375T12 3q.25 0 .488.125t.387.375l9.25 16q.15.25.138.513t-.138.487q-.125.225-.35.363t-.5.137zm1.725-2h15.1L12 6zM12 18q.425 0 .713-.288T13 17q0-.425-.288-.712T12 16q-.425 0-.712.288T11 17q0 .425.288.713T12 18m0-3q.425 0 .713-.288T13 14v-3q0-.425-.288-.712T12 10q-.425 0-.712.288T11 11v3q0 .425.288.713T12 15m0-2.5"%2F%3E%3C%2Fsvg%3E');
+}
+
+.mdbook-alerts-caution {
+  --mdbook-alerts-color: rgb(207, 34, 46);
+  /* https://icon-sets.iconify.design/material-symbols/brightness-alert-outline-rounded/ */
+  --mdbook-alerts-icon: url('data:image/svg+xml,%3Csvg xmlns="http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg" width="24" height="24" viewBox="0 0 24 24"%3E%3Cpath fill="currentColor" d="M12 17q.425 0 .713-.288T13 16q0-.425-.288-.712T12 15q-.425 0-.712.288T11 16q0 .425.288.713T12 17m0-4q.425 0 .713-.288T13 12V8q0-.425-.288-.712T12 7q-.425 0-.712.288T11 8v4q0 .425.288.713T12 13m-3.35 7H6q-.825 0-1.412-.587T4 18v-2.65L2.075 13.4q-.275-.3-.425-.662T1.5 12q0-.375.15-.737t.425-.663L4 8.65V6q0-.825.588-1.412T6 4h2.65l1.95-1.925q.3-.275.663-.425T12 1.5q.375 0 .738.15t.662.425L15.35 4H18q.825 0 1.413.588T20 6v2.65l1.925 1.95q.275.3.425.663t.15.737q0 .375-.15.738t-.425.662L20 15.35V18q0 .825-.587 1.413T18 20h-2.65l-1.95 1.925q-.3.275-.662.425T12 22.5q-.375 0-.737-.15t-.663-.425zm.85-2l2.5 2.5l2.5-2.5H18v-3.5l2.5-2.5L18 9.5V6h-3.5L12 3.5L9.5 6H6v3.5L3.5 12L6 14.5V18zm2.5-6"%2F%3E%3C%2Fsvg%3E');
+}
+
+</style>
+<h1 id="rollup-stages-and-ethrex"><a class="header" href="#rollup-stages-and-ethrex">Rollup Stages and ethrex</a></h1>
+<p>This document explains how the <a href="https://l2beat.com/stages">L2Beat rollup stage definitions</a> map to the current ethrex L2 stack.</p>
+<h2 id="important-distinctions"><a class="header" href="#important-distinctions">Important Distinctions</a></h2>
+<p>Stages are properties of a <strong>deployed</strong> L2, whereas ethrex is a framework that different projects may configure and govern in their own way. In what follows we make two simplifying assumptions:</p>
+<ul>
+<li>If ethrex provides the functionality required to deploy a Stage X rollup, we consider ethrex capable of achieving Stage X, even if a particular deployment chooses not to enable some features.</li>
+<li>When we talk about <strong>ethrex L2</strong> we are referring to ethrex in <strong>rollup mode</strong>, not Validium. In rollup mode, Ethereum L1 is the data availability layer; in Validium mode it is not.</li>
+</ul>
+<p>The L2Beat framework evaluates <em>decentralization</em> specifically, not security from bugs. A Stage 2 rollup could still have vulnerabilities if the proof system is experimental or unaudited.</p>
+<h2 id="stage-0"><a class="header" href="#stage-0">Stage 0</a></h2>
+<p>Stage 0 ("Full Training Wheels") represents the basic operational requirements for a rollup.</p>
+<h3 id="summary"><a class="header" href="#summary">Summary</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Requirement</th><th>Status</th><th>Details</th></tr></thead><tbody>
+<tr><td>Project calls itself a rollup</td><td>✅ Met</td><td>Docs describe ethrex as a framework to launch an L2 rollup</td></tr>
+<tr><td>L2 state roots posted on L1</td><td>✅ Met</td><td>Each committed batch stores <code>newStateRoot</code> in <code>OnChainProposer</code></td></tr>
+<tr><td>Data availability on L1</td><td>✅ Met</td><td>In rollup mode every batch must publish a non-zero EIP-4844 blob hash</td></tr>
+<tr><td>Software to reconstruct state</td><td>✅ Met</td><td>Node, blobs tooling, and prover docs describe how to rebuild state</td></tr>
+<tr><td>Proper proof system used</td><td>✅ Met</td><td>Batches verified using zkVM validity proofs (SP1/RISC0) or TDX attestations</td></tr>
+</tbody></table>
+</div>
+<h3 id="detailed-analysis"><a class="header" href="#detailed-analysis">Detailed Analysis</a></h3>
+<h4 id="does-the-project-call-itself-a-rollup"><a class="header" href="#does-the-project-call-itself-a-rollup">Does the project call itself a rollup?</a></h4>
+<p>Yes. As stated in <a href="l2/./introduction.html">the introduction</a>:</p>
+<blockquote>
+<p>Ethrex is a framework that lets you launch your own L2 rollup or blockchain.</p>
+</blockquote>
+<h4 id="are-l2-state-roots-posted-on-l1"><a class="header" href="#are-l2-state-roots-posted-on-l1">Are L2 state roots posted on L1?</a></h4>
+<p>Yes. Every time a batch is committed to the <code>OnChainProposer</code> on L1, the new L2 state root is sent and stored in the <code>batchCommitments</code> mapping as <code>newStateRoot</code> for that batch.</p>
+<h4 id="does-the-project-provide-data-availability-on-l1"><a class="header" href="#does-the-project-provide-data-availability-on-l1">Does the project provide data availability on L1?</a></h4>
+<p>Yes. When committing a batch in rollup mode (non-validium), the transaction must include a non-zero blob hash, so a blob MUST be sent to the <code>OnChainProposer</code> on L1.</p>
+<ul>
+<li>The <a href="l2/./architecture/overview.html">architecture docs</a> state that the blob contains the <strong>RLP-encoded L2 blocks and fee configuration</strong></li>
+<li>The blob commitment (<code>blobKZGVersionedHash</code>) is included in the batch commitment and re-checked during proof verification</li>
+</ul>
+<p>This means all data needed to reconstruct the L2 (transactions and state) is published on L1 as blobs.</p>
+<h4 id="is-software-capable-of-reconstructing-the-rollups-state-available"><a class="header" href="#is-software-capable-of-reconstructing-the-rollups-state-available">Is software capable of reconstructing the rollup's state available?</a></h4>
+<p>Yes.</p>
+<ul>
+<li>The L2 node provides the <code>ethrex l2 reconstruct</code> subcommand to follow L1 commitments and reconstruct the state from blobs</li>
+<li>The <a href="l2/../developers/l2/state-reconstruction-blobs.html">state reconstruction blobs</a> doc explains how to generate and use blobs for replaying state</li>
+<li>The <a href="l2/./fundamentals/data_availability.html">data availability</a> and <a href="l2/../prover/prover.html">prover docs</a> describe how published data is used to reconstruct and verify state</li>
+</ul>
+<h4 id="does-the-project-use-a-proper-proof-system"><a class="header" href="#does-the-project-use-a-proper-proof-system">Does the project use a proper proof system?</a></h4>
+<p>Yes, assuming proofs are enabled.</p>
+<p>ethrex supports multiple proving mechanisms:</p>
+<ul>
+<li><strong>zkVM validity proofs</strong>: SP1 and RISC0</li>
+<li><strong>TDX attestations</strong>: TEE-based verification</li>
+<li><strong>Aligned Layer</strong>: Optional proof aggregation for cost efficiency</li>
+</ul>
+<p>The <code>OnChainProposer</code> contract can be configured to require many combinations of these mechanisms. A batch is only verified on L1 if all configured proofs pass and their public inputs match the committed data (state roots, withdrawals, blobs, etc.).</p>
+<h4 id="are-there-at-least-5-external-actors-that-can-submit-a-fraud-proof"><a class="header" href="#are-there-at-least-5-external-actors-that-can-submit-a-fraud-proof">Are there at least 5 external actors that can submit a fraud proof?</a></h4>
+<p>Not applicable. ethrex uses <strong>validity proofs</strong>, not fraud proofs. There is no on-chain "challenge game" where watchers submit alternate traces to invalidate a state root.</p>
+<h3 id="stage-0-assessment"><a class="header" href="#stage-0-assessment">Stage 0 Assessment</a></h3>
+<p><strong>ethrex L2 meets all Stage 0 requirements.</strong></p>
+<h2 id="stage-1"><a class="header" href="#stage-1">Stage 1</a></h2>
+<p>Stage 1 ("Limited Training Wheels") requires that users have trustless exit guarantees, with a Security Council retaining only limited emergency powers.</p>
+<h3 id="core-principle"><a class="header" href="#core-principle">Core Principle</a></h3>
+<blockquote>
+<p>"The only way (other than bugs) for a rollup to indefinitely block an L2→L1 message or push an invalid L2→L1 message is by compromising ≥75% of the Security Council."</p>
+</blockquote>
+<h3 id="summary-1"><a class="header" href="#summary-1">Summary</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Requirement</th><th>Status</th><th>Details</th></tr></thead><tbody>
+<tr><td>Censorship-resistant L2→L1 messages</td><td>❌ Gap</td><td>Sequencer can indefinitely censor withdrawals; no forced-inclusion mechanism</td></tr>
+<tr><td>Sequencer cannot push invalid messages</td><td>✅ Met</td><td>Invalid withdrawals require contract/VK changes controlled by owner</td></tr>
+<tr><td>≥7-day exit window for non-SC upgrades</td><td>✅ Met</td><td>Only owner can upgrade; no non-SC upgrade path exists</td></tr>
+</tbody></table>
+</div>
+<h3 id="detailed-analysis-1"><a class="header" href="#detailed-analysis-1">Detailed Analysis</a></h3>
+<h4 id="can-l2l1-messages-be-censored"><a class="header" href="#can-l2l1-messages-be-censored">Can L2→L1 messages be censored?</a></h4>
+<p><strong>Yes, this is the main Stage 1 gap.</strong></p>
+<p>The sequencer can indefinitely block/censor an L2→L1 message (e.g., a withdrawal) by simply not including the withdrawal transaction in an L2 block. This does not require compromising the owner/Security Council.</p>
+<p><strong>What's missing</strong>: A forced-inclusion mechanism where users can submit their withdrawal directly on L1, and the sequencer must include it in a subsequent batch within a bounded time window or lose sequencing rights.</p>
+<div class="mdbook-alerts mdbook-alerts-note">
+<p class="mdbook-alerts-title">
+  <span class="mdbook-alerts-icon"></span>
+  note
+</p>
+<p>This is the primary blocker for Stage 1 compliance. Implementing forced inclusion of withdrawals enforced by L1 contracts would address this gap.</p>
+</div>
+<h4 id="can-the-sequencer-push-invalid-l2l1-messages"><a class="header" href="#can-the-sequencer-push-invalid-l2l1-messages">Can the sequencer push invalid L2→L1 messages?</a></h4>
+<p><strong>No.</strong> The sequencer cannot unilaterally make L1 accept an invalid L2→L1 message. This would require:</p>
+<ul>
+<li>Changing contract code</li>
+<li>Updating the verifying key in <code>OnChainProposer</code></li>
+</ul>
+<p>Only the Security Council (owner) can perform those upgrades.</p>
+<h4 id="what-about-upgrades-from-entities-outside-the-security-council"><a class="header" href="#what-about-upgrades-from-entities-outside-the-security-council">What about upgrades from entities outside the Security Council?</a></h4>
+<p>In ethrex L2 contracts, there are no entities other than the owner that can perform upgrades. Therefore:</p>
+<ul>
+<li>Upgrades initiated by entities outside the Security Council are not possible</li>
+<li>If such an upgrade path were introduced, it would need to provide the required 7-day exit window</li>
+</ul>
+<h4 id="security-council-configuration"><a class="header" href="#security-council-configuration">Security Council Configuration</a></h4>
+<p>Both <code>OnChainProposer</code> and <code>CommonBridge</code> are upgradeable contracts controlled by a single <code>owner</code> address. ethrex itself does not hard-code a Security Council, but a deployment can introduce one by making the <code>owner</code> a multisig.</p>
+<p>According to L2Beat requirements, the Security Council should have:</p>
+<ul>
+<li>At least 8 members</li>
+<li>≥75% threshold for critical actions</li>
+<li>Diverse signers from different organizations/jurisdictions</li>
+</ul>
+<h3 id="stage-1-assessment"><a class="header" href="#stage-1-assessment">Stage 1 Assessment</a></h3>
+<p><strong>ethrex L2 does not meet Stage 1 requirements today.</strong></p>
+<p>The main gap is censorship-resistant L2→L1 messages. The sequencer can ignore withdrawal transactions indefinitely, and there is no forced-inclusion mechanism (unlike the existing forced-inclusion mechanism for deposits).</p>
+<h3 id="path-to-stage-1"><a class="header" href="#path-to-stage-1">Path to Stage 1</a></h3>
+<p>To achieve Stage 1, ethrex would need:</p>
+<ol>
+<li><strong>Forced withdrawal inclusion</strong>: Implement an L1 mechanism where users can submit withdrawals directly, with sequencer penalties for non-inclusion</li>
+<li><strong>Security Council multisig</strong>: Deploy owner as an 8+ member multisig with ≥75% threshold</li>
+<li><strong>Exit window enforcement</strong>: ethrex has Timelock functionality that gates the <code>OnChainProposer</code>, but deployment configuration must enforce ≥7 day delays for non-emergency upgrades</li>
+</ol>
+<h2 id="stage-2"><a class="header" href="#stage-2">Stage 2</a></h2>
+<p>Stage 2 ("No Training Wheels") requires fully permissionless proving and tightly constrained emergency upgrade powers.</p>
+<h3 id="summary-2"><a class="header" href="#summary-2">Summary</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Requirement</th><th>Status</th><th>Details</th></tr></thead><tbody>
+<tr><td>Permissionless validity proofs</td><td>❌ Gap</td><td>Only authorized sequencers can commit and verify batches</td></tr>
+<tr><td>≥30-day exit window</td><td>❌ Gap</td><td>No protocol-level exit window; UUPS upgrades have no mandatory delay</td></tr>
+<tr><td>SC restricted to on-chain errors</td><td>❌ Gap</td><td>Owner can pause/upgrade for any reason</td></tr>
+</tbody></table>
+</div>
+<h3 id="detailed-analysis-2"><a class="header" href="#detailed-analysis-2">Detailed Analysis</a></h3>
+<h4 id="is-the-validity-proof-system-permissionless"><a class="header" href="#is-the-validity-proof-system-permissionless">Is the validity proof system permissionless?</a></h4>
+<p><strong>No.</strong> In the standard <code>OnChainProposer</code> implementation (<code>crates/l2/contracts/src/l1/OnChainProposer.sol</code>), committing and verifying batches are restricted to authorized sequencer addresses only. Submitting proofs is not permissionless.</p>
+<h4 id="do-users-have-at-least-30-days-to-exit-before-unwanted-upgrades"><a class="header" href="#do-users-have-at-least-30-days-to-exit-before-unwanted-upgrades">Do users have at least 30 days to exit before unwanted upgrades?</a></h4>
+<p><strong>No.</strong> There is no protocol-level exit window tied to contract upgrades. UUPS upgrades can be executed by the owner without a mandatory delay.</p>
+<h4 id="is-the-security-council-restricted-to-act-only-due-to-on-chain-errors"><a class="header" href="#is-the-security-council-restricted-to-act-only-due-to-on-chain-errors">Is the Security Council restricted to act only due to on-chain errors?</a></h4>
+<p><strong>No.</strong> There is no built-in restriction that limits the owner to responding only to detected on-chain bugs. The owner can pause or upgrade contracts for any reason.</p>
+<h3 id="stage-2-assessment"><a class="header" href="#stage-2-assessment">Stage 2 Assessment</a></h3>
+<p><strong>ethrex L2 does not meet Stage 2 requirements.</strong></p>
+<h3 id="path-to-stage-2"><a class="header" href="#path-to-stage-2">Path to Stage 2</a></h3>
+<p>To achieve Stage 2, ethrex would need (in addition to Stage 1 requirements):</p>
+<ol>
+<li><strong>Permissionless proving</strong>: Allow anyone to submit validity proofs for batches</li>
+<li><strong>30-day exit window</strong>: Implement mandatory delay for all contract upgrades</li>
+<li><strong>Restricted SC powers</strong>: Limit Security Council actions to adjudicable on-chain bugs only</li>
+<li><strong>Mature proof system</strong>: Battle-tested ZK provers with comprehensive security audits</li>
+</ol>
+<h2 id="comparison-with-other-rollups"><a class="header" href="#comparison-with-other-rollups">Comparison with Other Rollups</a></h2>
+<h3 id="based-rollups"><a class="header" href="#based-rollups">Based Rollups</a></h3>
+<p>Based rollups delegate sequencing to Ethereum L1 validators rather than using a centralized sequencer. This is particularly relevant for ethrex as it implements based sequencing (currently in development).</p>
+<div class="table-wrapper"><table><thead><tr><th>Project</th><th>Current Stage</th><th>Main Gaps</th><th>Proof System</th><th>Sequencer Model</th></tr></thead><tbody>
+<tr><td><strong>ethrex L2</strong></td><td>Stage 0</td><td>Forced inclusion, permissionless proving</td><td>Multi-proof (ZK + TEE)</td><td>Based (round-robin)</td></tr>
+<tr><td>Taiko Alethia</td><td>Stage 0*</td><td>ZK not mandatory, upgrade delays</td><td>Multi-proof (SGX mandatory, ZK optional)</td><td>Based (permissionless)</td></tr>
+<tr><td>Surge</td><td>Not deployed</td><td>N/A (template)</td><td>Based on Taiko stack</td><td>Based (L1 validators)</td></tr>
+</tbody></table>
+</div>
+<p><strong>Taiko Alethia</strong> is the first based rollup on mainnet. It requires two proofs per block: SGX (Geth) is mandatory, plus one of SGX (Reth), SP1, or RISC0. <strong>Critically, blocks can be proven with TEE only (no ZK)</strong> if both SGX verifiers are used. As of early 2025, only ~30% of blocks use ZK proofs. L2BEAT warns that "funds can be stolen if a malicious block is proven by compromised SGX instances." Taiko plans to require 100% ZK coverage with the Shasta fork in Q4 2025.</p>
+<blockquote>
+<p>*L2BEAT currently classifies Taiko as "not even Stage 0" because "the proof system is still under development." However, Taiko has been a multi-prover based rollup since the Pacaya fork and the system is architecturally prepared for Stage 0. This appears to be a classification nuance rather than a fundamental gap.</p>
+</blockquote>
+<p><strong>Surge</strong> is a based rollup template by Nethermind, built on the Taiko stack and designed to target Stage 2 from inception. It removes centralized sequencing entirely, letting Ethereum validators handle transaction ordering. Not yet deployed as a production rollup.</p>
+<h3 id="zk-rollups"><a class="header" href="#zk-rollups">ZK Rollups</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Project</th><th>Current Stage</th><th>Main Gaps</th><th>Proof System</th></tr></thead><tbody>
+<tr><td><strong>ethrex L2</strong></td><td>Stage 0</td><td>Forced inclusion, permissionless proving</td><td>Multi-proof (ZK + TEE)</td></tr>
+<tr><td>Scroll</td><td>Stage 1</td><td>30-day window, multi-prover</td><td>ZK validity proofs</td></tr>
+<tr><td>zkSync Era</td><td>Stage 0*</td><td>Evaluation pending, forced inclusion</td><td>ZK validity proofs</td></tr>
+<tr><td>Starknet</td><td>Stage 1</td><td>30-day window, SC restrictions</td><td>ZK validity proofs (STARK)</td></tr>
+</tbody></table>
+</div>
+<p><strong>Scroll</strong> became the first ZK rollup to achieve Stage 1 (April 2025) through the Euclid upgrade, which introduced permissionless sequencing fallback and a 12-member Security Council with 75% threshold.</p>
+<p><strong>zkSync Era</strong> is currently experiencing a <strong>proof system pause</strong> due to a vulnerability, causing partial liveness failure. Previously, a critical bug in zk-circuits was discovered that could have led to $1.9B in potential losses if exploited.</p>
+<blockquote>
+<p>*L2BEAT states they "haven't finished evaluation" of zkSync Era's Stage 1 elements - not that zkSync fails requirements. The main pending item is a forced inclusion mechanism. With 75% of proving already delegated to external provers and decentralized sequencing (ChonkyBFT) underway, zkSync appears architecturally Stage 1-ready.</p>
+</blockquote>
+<p><strong>Starknet</strong> reached Stage 1 but shares its SHARP verifier with other StarkEx rollups. The verifier can be changed by a 2/4 multisig with 8-day delay. The Security Council (9/12) retains instant upgrade capability. This shared verifier creates concentration risk across multiple chains.</p>
+<h3 id="optimistic-rollups"><a class="header" href="#optimistic-rollups">Optimistic Rollups</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Project</th><th>Current Stage</th><th>Main Gaps</th><th>Proof System</th></tr></thead><tbody>
+<tr><td>Arbitrum One</td><td>Stage 1</td><td>SC override power, 30-day window</td><td>Optimistic (fraud proofs)</td></tr>
+<tr><td>Optimism</td><td>Stage 1</td><td>Exit window, SC restrictions</td><td>Optimistic (fault proofs)</td></tr>
+</tbody></table>
+</div>
+<p><strong>Arbitrum One</strong> uses BoLD (Bounded Liquidity Delay) for permissionless fraud proofs - anyone can challenge state assertions. However, Arbitrum remains Stage 1 because the Security Council retains broad override powers. Stage 2 requires restricting SC to "provable bugs only" and extending exit windows to 30 days. The ~6.4 day withdrawal delay is inherent to the optimistic model.</p>
+<p><strong>Optimism</strong> has permissionless fault proofs but L2BEAT notes: "There is no exit window for users to exit in case of unwanted regular upgrades as they are initiated by the Security Council with instant upgrade power." Both Arbitrum and Optimism are <strong>technically ready for Stage 2</strong> but held back by <strong>intentional governance constraints</strong>, not technical limitations.</p>
+<h3 id="l2beat-risk-summary"><a class="header" href="#l2beat-risk-summary">L2BEAT Risk Summary</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Project</th><th>Critical Warnings</th></tr></thead><tbody>
+<tr><td>Taiko Alethia</td><td>Funds at risk from compromised SGX; ZK optional; unverified contracts</td></tr>
+<tr><td>Scroll</td><td>No upgrade delay; emergency verifier upgrade occurred Aug 2025</td></tr>
+<tr><td>zkSync Era</td><td>Proof system currently paused; prior $1.9B bug discovered</td></tr>
+<tr><td>Starknet</td><td>Shared SHARP verifier; SC has instant upgrade power</td></tr>
+<tr><td>Arbitrum One</td><td>Malicious upgrade risk; optimistic delay (~6.4 days)</td></tr>
+<tr><td>Optimism</td><td>No exit window for SC upgrades; dispute game vulnerabilities</td></tr>
+</tbody></table>
+</div><div class="mdbook-alerts mdbook-alerts-warning">
+<p class="mdbook-alerts-title">
+  <span class="mdbook-alerts-icon"></span>
+  warning
+</p>
+<p>All rollups carry risks. Even Stage 1 rollups retain Security Council powers that could theoretically be abused. Stage 2 remains unachieved by any production rollup as of early 2025.</p>
+</div>
+<h3 id="key-observations"><a class="header" href="#key-observations">Key Observations</a></h3>
+<ol>
+<li><strong>No rollup has achieved Stage 2 yet</strong> - All production rollups remain at Stage 0 or Stage 1</li>
+<li><strong>Classification vs architecture gaps</strong> - Some rollups (Taiko, zkSync Era) are classified lower than their architecture supports due to L2BEAT evaluation timing or minor gaps</li>
+<li><strong>Governance is the bottleneck</strong> - Arbitrum and Optimism have permissionless proofs but are held at Stage 1 by intentional Security Council powers, not technical limitations</li>
+<li><strong>Based rollups are newer</strong> - Taiko and ethrex are pioneering based sequencing, both at Stage 0</li>
+<li><strong>Multi-proof is emerging</strong> - ethrex, Taiko, and Scroll are all exploring multi-proof systems for enhanced security</li>
+</ol>
+<h2 id="recommendations"><a class="header" href="#recommendations">Recommendations</a></h2>
+<h3 id="for-stage-1-compliance"><a class="header" href="#for-stage-1-compliance">For Stage 1 Compliance</a></h3>
+<ol>
+<li>
+<p><strong>Implement forced withdrawal inclusion</strong></p>
+<ul>
+<li>Users can submit withdrawal requests directly to L1</li>
+<li>Sequencer must include within N blocks or face penalties</li>
+<li>Fallback mechanism if sequencer fails to include</li>
+</ul>
+</li>
+<li>
+<p><strong>Deploy Security Council as multisig</strong></p>
+<ul>
+<li>8+ diverse signers</li>
+<li>75%+ threshold (e.g., 6/8)</li>
+<li>Document emergency procedures</li>
+</ul>
+</li>
+<li>
+<p><strong>Add upgrade timelock</strong></p>
+<ul>
+<li>Minimum 7-day delay for non-emergency upgrades</li>
+<li>Emergency path requires SC threshold</li>
+</ul>
+</li>
+</ol>
+<h3 id="for-future-stage-2-transition"><a class="header" href="#for-future-stage-2-transition">For Future Stage 2 Transition</a></h3>
+<ol>
+<li>
+<p><strong>Open proof submission</strong></p>
+<ul>
+<li>Remove sequencer-only restriction on <code>verifyBatch()</code></li>
+<li>Anyone can submit valid proofs</li>
+</ul>
+</li>
+<li>
+<p><strong>Extend exit window to 30+ days</strong></p>
+<ul>
+<li>Mandatory delay on all upgrade paths</li>
+<li>Clear user notification mechanism</li>
+</ul>
+</li>
+<li>
+<p><strong>Formalize SC restrictions</strong></p>
+<ul>
+<li>On-chain governance limiting SC powers</li>
+<li>Transparent criteria for emergency actions</li>
+</ul>
+</li>
+<li>
+<p><strong>Proof system maturity</strong></p>
+<ul>
+<li>Comprehensive security audits</li>
+<li>Multiple independent prover implementations</li>
+<li>Operational track record</li>
+</ul>
+</li>
+</ol>
+<h2 id="conclusion"><a class="header" href="#conclusion">Conclusion</a></h2>
+<p>ethrex L2 currently satisfies all <strong>Stage 0</strong> requirements and provides a solid foundation for rollup deployments.</p>
+<p>The path to <strong>Stage 1</strong> is clear but requires implementing censorship-resistant withdrawals through a forced-inclusion mechanism. This is the primary gap preventing Stage 1 compliance.</p>
+<p><strong>Stage 2</strong> requires additional work on permissionless proving, extended exit windows, and formal restrictions on Security Council powers.</p>
+<div class="table-wrapper"><table><thead><tr><th>Stage</th><th>Status</th><th>Primary Blocker</th></tr></thead><tbody>
+<tr><td>Stage 0</td><td>✅ Met</td><td>-</td></tr>
+<tr><td>Stage 1</td><td>❌ Not met</td><td>Forced inclusion for withdrawals</td></tr>
+<tr><td>Stage 2</td><td>❌ Not met</td><td>Permissionless proving, 30-day exit window</td></tr>
+</tbody></table>
+</div>
+<h2 id="references"><a class="header" href="#references">References</a></h2>
+<h3 id="l2beat-resources"><a class="header" href="#l2beat-resources">L2Beat Resources</a></h3>
+<ul>
+<li><a href="https://l2beat.com/stages">L2Beat Stages Framework</a></li>
+<li><a href="https://forum.l2beat.com/t/stages-update-a-high-level-guiding-principle-for-stage-1/338">L2Beat Forum: Stages Update</a></li>
+<li><a href="https://medium.com/l2beat/introducing-stages-a-framework-to-evaluate-rollups-maturity-d290bb22befe">L2Beat: Introducing Stages</a></li>
+</ul>
+<h3 id="rollup-comparisons"><a class="header" href="#rollup-comparisons">Rollup Comparisons</a></h3>
+<ul>
+<li><a href="https://l2beat.com/scaling/projects/taiko">Taiko Alethia on L2Beat</a></li>
+<li><a href="https://l2beat.com/scaling/projects/scroll">Scroll on L2Beat</a></li>
+<li><a href="https://l2beat.com/scaling/projects/zksync-era">zkSync Era on L2Beat</a></li>
+<li><a href="https://l2beat.com/scaling/projects/starknet">Starknet on L2Beat</a></li>
+<li><a href="https://l2beat.com/scaling/projects/arbitrum">Arbitrum One on L2Beat</a></li>
+<li><a href="https://l2beat.com/scaling/projects/optimism">Optimism on L2Beat</a></li>
+<li><a href="https://www.nethermind.io/blog/surge-a-based-rollup-template-designed-for-ethereums-future">Surge: A Based Rollup Template</a></li>
+</ul>
+<h3 id="ethrex-documentation"><a class="header" href="#ethrex-documentation">ethrex Documentation</a></h3>
+<ul>
+<li><a href="l2/./fundamentals/data_availability.html">ethrex Data Availability</a></li>
+<li><a href="l2/./fundamentals/withdrawals.html">ethrex Withdrawals</a></li>
+<li><a href="l2/./fundamentals/based.html">ethrex Based Sequencing</a></li>
+</ul>
 <div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <style>
 .mdbook-alerts {
@@ -8004,6 +8503,8 @@ Retry the deploy command adding <code>--priority-gas-price</code> and <code>--ga
 <li><a href="l2/fundamentals/./state_diffs.html">State diffs</a> explains the mechanism needed to provide data availability.</li>
 <li>How asset <a href="l2/fundamentals/./deposits.html">deposits</a> and <a href="l2/fundamentals/./withdrawals.html">withdrawals</a> work.</li>
 <li><a href="l2/fundamentals/./fee_token.html">Fee token</a></li>
+<li><a href="l2/fundamentals/./exit_window.html">Exit window</a> and <a href="l2/fundamentals/./timelock.html">Timelock</a> for upgrade safety mechanisms.</li>
+<li><a href="l2/fundamentals/./ethrex_l2_aligned_integration.html">Aligned Layer Integration</a> details how ethrex L2 integrates with Aligned Layer for proof aggregation and verification.</li>
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <style>
@@ -8255,13 +8756,13 @@ number_of_privileged_transaction_logs_u16 ||
 <tr><td>Block List</td><td>655</td><td>661</td><td>638</td><td>638</td><td>645</td><td>644</td><td>615</td><td>530</td><td>532</td><td>532</td></tr>
 </tbody></table>
 </div>
-<h3 id="summary"><a class="header" href="#summary">Summary</a></h3>
+<h3 id="summary-3"><a class="header" href="#summary-3">Summary</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>Blob Payload</th><th>Avg. ETH Transfers per Batch</th><th>Avg. ERC20 Transfers per Batch</th></tr></thead><tbody>
 <tr><td>State Diff</td><td>2298</td><td>1870</td></tr>
 <tr><td>Block List</td><td>965</td><td>609</td></tr>
 </tbody></table>
 </div>
-<h2 id="conclusion"><a class="header" href="#conclusion">Conclusion</a></h2>
+<h2 id="conclusion-1"><a class="header" href="#conclusion-1">Conclusion</a></h2>
 <p>Sending block lists in blobs instead of state diffs decreases the number of transactions that can fit in a single blob by approximately 2x for ETH transfers and 3x for ERC20 transfers.</p>
 <h2 id="how-this-measurements-were-done"><a class="header" href="#how-this-measurements-were-done">How this measurements were done</a></h2>
 <h3 id="prerequisites-14"><a class="header" href="#prerequisites-14">Prerequisites</a></h3>
@@ -8867,6 +9368,493 @@ leaf3 = {value, concat(k, path)} # New leaf replacing branch1 and leaf2
 <p><img src="l2/fundamentals/../img/execw_case2.png" alt="Image showing restructuration for case 2" /></p>
 <p>In this case, restructuring requires information about <strong>branch/ext 2</strong> (which could be a branch or extension node), but this node might not be in the witness. Checking the final <strong>extension</strong> node might seem sufficient to deduce <strong>branch/ext 2</strong> in simple scenarios. However, this fails if similar restructuring occurred at higher trie levels involving more removals, as the final <strong>extension</strong> node might combine paths from multiple original branches, making it ambiguous to reconstruct the specific missing <strong>branch/ext 2</strong> node.</p>
 <div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
+<style>
+.mdbook-alerts {
+  padding: 8px 16px;
+  margin-bottom: 16px;
+  border-left: 0.25em solid var(--mdbook-alerts-color);
+}
+
+.mdbook-alerts > *:first-child {
+  margin-top: 0;
+}
+
+.mdbook-alerts > *:last-child {
+  margin-bottom: 0;
+}
+
+.mdbook-alerts-title {
+  display: flex;
+  font-weight: 600;
+  align-items: center;
+  line-height: 1;
+  color: var(--mdbook-alerts-color);
+  text-transform: capitalize;
+}
+
+.mdbook-alerts-icon {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  margin-right: 0.2em;
+  background-color: currentColor;
+  -webkit-mask: no-repeat center / 100%;
+  mask: no-repeat center / 100%;
+  -webkit-mask-image: var(--mdbook-alerts-icon);
+  mask-image: var(--mdbook-alerts-icon);
+}
+
+.mdbook-alerts-note {
+  --mdbook-alerts-color: rgb(9, 105, 218);
+  /* https://icon-sets.iconify.design/material-symbols/info-outline-rounded/ */
+  --mdbook-alerts-icon: url('data:image/svg+xml,%3Csvg xmlns="http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg" width="24" height="24" viewBox="0 0 24 24"%3E%3Cpath fill="currentColor" d="M12 17q.425 0 .713-.288T13 16v-4q0-.425-.288-.712T12 11q-.425 0-.712.288T11 12v4q0 .425.288.713T12 17m0-8q.425 0 .713-.288T13 8q0-.425-.288-.712T12 7q-.425 0-.712.288T11 8q0 .425.288.713T12 9m0 13q-2.075 0-3.9-.788t-3.175-2.137q-1.35-1.35-2.137-3.175T2 12q0-2.075.788-3.9t2.137-3.175q1.35-1.35 3.175-2.137T12 2q2.075 0 3.9.788t3.175 2.137q1.35 1.35 2.138 3.175T22 12q0 2.075-.788 3.9t-2.137 3.175q-1.35 1.35-3.175 2.138T12 22m0-2q3.35 0 5.675-2.325T20 12q0-3.35-2.325-5.675T12 4Q8.65 4 6.325 6.325T4 12q0 3.35 2.325 5.675T12 20m0-8"%2F%3E%3C%2Fsvg%3E');
+}
+
+.mdbook-alerts-tip {
+  --mdbook-alerts-color: rgb(26, 127, 55);
+  /* https://icon-sets.iconify.design/material-symbols/lightbulb-outline-rounded/ */
+  --mdbook-alerts-icon: url('data:image/svg+xml,%3Csvg xmlns="http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg" width="24" height="24" viewBox="0 0 24 24"%3E%3Cpath fill="currentColor" d="M12 22q-.825 0-1.412-.587T10 20h4q0 .825-.587 1.413T12 22m-3-3q-.425 0-.712-.288T8 18q0-.425.288-.712T9 17h6q.425 0 .713.288T16 18q0 .425-.288.713T15 19zm-.75-3q-1.725-1.025-2.738-2.75T4.5 9.5q0-3.125 2.188-5.312T12 2q3.125 0 5.313 2.188T19.5 9.5q0 2.025-1.012 3.75T15.75 16zm.6-2h6.3q1.125-.8 1.738-1.975T17.5 9.5q0-2.3-1.6-3.9T12 4Q9.7 4 8.1 5.6T6.5 9.5q0 1.35.613 2.525T8.85 14M12 14"%2F%3E%3C%2Fsvg%3E');
+}
+
+.mdbook-alerts-important {
+  --mdbook-alerts-color: rgb(130, 80, 223);
+  /* https://icon-sets.iconify.design/material-symbols/chat-info-outline-rounded/ */
+  --mdbook-alerts-icon: url('data:image/svg+xml,%3Csvg xmlns="http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg" width="24" height="24" viewBox="0 0 24 24"%3E%3Cpath fill="currentColor" d="M12 7q.425 0 .713-.288T13 6q0-.425-.288-.712T12 5q-.425 0-.712.288T11 6q0 .425.288.713T12 7m0 8q.425 0 .713-.288T13 14v-4q0-.425-.288-.712T12 9q-.425 0-.712.288T11 10v4q0 .425.288.713T12 15m-6 3l-2.3 2.3q-.475.475-1.088.213T2 19.575V4q0-.825.588-1.412T4 2h16q.825 0 1.413.588T22 4v12q0 .825-.587 1.413T20 18zm-.85-2H20V4H4v13.125zM4 16V4z"%2F%3E%3C%2Fsvg%3E');
+}
+
+.mdbook-alerts-warning {
+  --mdbook-alerts-color: rgb(154, 103, 0);
+  /* https://icon-sets.iconify.design/material-symbols/warning-outline-rounded/ */
+  --mdbook-alerts-icon: url('data:image/svg+xml,%3Csvg xmlns="http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg" width="24" height="24" viewBox="0 0 24 24"%3E%3Cpath fill="currentColor" d="M2.725 21q-.275 0-.5-.137t-.35-.363q-.125-.225-.137-.488t.137-.512l9.25-16q.15-.25.388-.375T12 3q.25 0 .488.125t.387.375l9.25 16q.15.25.138.513t-.138.487q-.125.225-.35.363t-.5.137zm1.725-2h15.1L12 6zM12 18q.425 0 .713-.288T13 17q0-.425-.288-.712T12 16q-.425 0-.712.288T11 17q0 .425.288.713T12 18m0-3q.425 0 .713-.288T13 14v-3q0-.425-.288-.712T12 10q-.425 0-.712.288T11 11v3q0 .425.288.713T12 15m0-2.5"%2F%3E%3C%2Fsvg%3E');
+}
+
+.mdbook-alerts-caution {
+  --mdbook-alerts-color: rgb(207, 34, 46);
+  /* https://icon-sets.iconify.design/material-symbols/brightness-alert-outline-rounded/ */
+  --mdbook-alerts-icon: url('data:image/svg+xml,%3Csvg xmlns="http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg" width="24" height="24" viewBox="0 0 24 24"%3E%3Cpath fill="currentColor" d="M12 17q.425 0 .713-.288T13 16q0-.425-.288-.712T12 15q-.425 0-.712.288T11 16q0 .425.288.713T12 17m0-4q.425 0 .713-.288T13 12V8q0-.425-.288-.712T12 7q-.425 0-.712.288T11 8v4q0 .425.288.713T12 13m-3.35 7H6q-.825 0-1.412-.587T4 18v-2.65L2.075 13.4q-.275-.3-.425-.662T1.5 12q0-.375.15-.737t.425-.663L4 8.65V6q0-.825.588-1.412T6 4h2.65l1.95-1.925q.3-.275.663-.425T12 1.5q.375 0 .738.15t.662.425L15.35 4H18q.825 0 1.413.588T20 6v2.65l1.925 1.95q.275.3.425.663t.15.737q0 .375-.15.738t-.425.662L20 15.35V18q0 .825-.587 1.413T18 20h-2.65l-1.95 1.925q-.3.275-.662.425T12 22.5q-.375 0-.737-.15t-.663-.425zm.85-2l2.5 2.5l2.5-2.5H18v-3.5l2.5-2.5L18 9.5V6h-3.5L12 3.5L9.5 6H6v3.5L3.5 12L6 14.5V18zm2.5-6"%2F%3E%3C%2Fsvg%3E');
+}
+
+</style>
+<h1 id="comparative-analysis-debug_executionwitness-latency-using-pre-generated-vs-on-demand-execution-witnesses"><a class="header" href="#comparative-analysis-debug_executionwitness-latency-using-pre-generated-vs-on-demand-execution-witnesses">Comparative Analysis: <code>debug_executionWitness</code> Latency Using Pre-Generated vs On-Demand Execution Witnesses</a></h1>
+<p>This document presents the results of measurements conducted to analyze the latency improvements of the <code>debug_executionWitness</code> RPC method when execution witnesses are pre-generated during payload execution and stored in the database for a period of time (128 blocks), compared to generating them on demand.</p>
+<div class="mdbook-alerts mdbook-alerts-note">
+<p class="mdbook-alerts-title">
+  <span class="mdbook-alerts-icon"></span>
+  note
+</p>
+<p>All measurements were obtained using an RPC node running on the same machine, avoiding network-related latency.</p>
+</div>
+<h2 id="measurements"><a class="header" href="#measurements">Measurements</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Metric</th><th>Pre-Generated</th><th>On-Demand</th></tr></thead><tbody>
+<tr><td><strong>Total Blocks Analyzed</strong></td><td>176</td><td>176</td></tr>
+<tr><td><strong>Min Time</strong></td><td>3 ms</td><td>56 ms</td></tr>
+<tr><td><strong>Max Time</strong></td><td>255 ms</td><td>521 ms</td></tr>
+<tr><td><strong>Average Time</strong></td><td>131 ms</td><td>242 ms</td></tr>
+<tr><td><strong>Median Time</strong></td><td>130 ms</td><td>224 ms</td></tr>
+<tr><td><strong>Block Range</strong></td><td>24191178 – 24191353</td><td>24190748 – 24190923</td></tr>
+</tbody></table>
+</div>
+<h2 id="conclusions"><a class="header" href="#conclusions">Conclusions</a></h2>
+<p>The average latency drops from <strong>242 ms (on-demand)</strong> to <strong>131 ms (pre-generated)</strong>, representing an improvement of approximately <strong>46%</strong>. Median latency shows a similar improvement, decreasing from <strong>224 ms</strong> to <strong>130 ms</strong>.</p>
+<p>Pre-generated execution witnesses exhibit a much tighter latency distribution. The maximum observed latency is reduced by more than half (<strong>521 ms → 255 ms</strong>).</p>
+<p>On-demand requests frequently experience high-latency spikes due to witness generation at request time. Pre-generating execution witnesses during payload execution effectively eliminates most of these spikes and results in more predictable response times.</p>
+<h2 id="how-these-measurements-were-done"><a class="header" href="#how-these-measurements-were-done">How These Measurements Were Done</a></h2>
+<p>These metrics were obtained from an <code>ethrex</code> node synced to the Ethereum mainnet.</p>
+<p>Two configurations were compared:</p>
+<ul>
+<li><strong>Pre-Generated</strong>: Execution witnesses are generated during payload execution and stored in the database.</li>
+<li><strong>On-Demand</strong>: Execution witnesses are generated when calling <code>debug_executionWitness</code>.</li>
+</ul>
+<p>Each configuration was measured over a contiguous range of blocks, and latency was recorded for each request.</p>
+<h2 id="how-to-get-metrics"><a class="header" href="#how-to-get-metrics">How to Get Metrics</a></h2>
+<ol>
+<li>
+<p>Ensure the node is synced.<br />
+Use the <code>--precompute-witnesses</code> flag to generate and store execution witnesses upon receiving a <code>newPayload</code> message.</p>
+</li>
+<li>
+<p>Enable debug logging for <code>ethrex-replay</code> by editing <code>src/main.rs:21</code>:</p>
+<pre><code>add_directive(Directive::from(tracing::Level::DEBUG))
+</code></pre>
+</li>
+<li>
+<p>Run <code>ethrex-replay</code> using the <code>--endless</code> flag:</p>
+<pre><code>cargo run -r -- blocks --endless --rpc-url [RPC_URL]
+</code></pre>
+</li>
+<li>
+<p>Filter logs to capture execution witness latency:</p>
+<pre><code>cargo run -r -- blocks --endless --rpc-url [RPC_URL] 2&gt;&amp;1 | grep --line-buffered 'Got execution witness for block' | tee execution_witness_times.txt
+</code></pre>
+</li>
+<li>
+<p>Post-process the captured measurements to compute min, max, average, and median latencies.</p>
+</li>
+</ol>
+<h2 id="appendix-1"><a class="header" href="#appendix-1">Appendix</a></h2>
+<h3 id="full-measurement-data"><a class="header" href="#full-measurement-data">Full Measurement Data</a></h3>
+<h4 id="pre-generated"><a class="header" href="#pre-generated">Pre-Generated</a></h4>
+<p><em>Total blocks analyzed: 176</em></p>
+<div class="table-wrapper"><table><thead><tr><th style="text-align: right">Block Number</th><th style="text-align: right">Time (ms)</th></tr></thead><tbody>
+<tr><td style="text-align: right">24191178</td><td style="text-align: right">103</td></tr>
+<tr><td style="text-align: right">24191179</td><td style="text-align: right">156</td></tr>
+<tr><td style="text-align: right">24191180</td><td style="text-align: right">61</td></tr>
+<tr><td style="text-align: right">24191181</td><td style="text-align: right">127</td></tr>
+<tr><td style="text-align: right">24191182</td><td style="text-align: right">103</td></tr>
+<tr><td style="text-align: right">24191183</td><td style="text-align: right">126</td></tr>
+<tr><td style="text-align: right">24191184</td><td style="text-align: right">132</td></tr>
+<tr><td style="text-align: right">24191185</td><td style="text-align: right">106</td></tr>
+<tr><td style="text-align: right">24191186</td><td style="text-align: right">97</td></tr>
+<tr><td style="text-align: right">24191187</td><td style="text-align: right">136</td></tr>
+<tr><td style="text-align: right">24191188</td><td style="text-align: right">64</td></tr>
+<tr><td style="text-align: right">24191189</td><td style="text-align: right">212</td></tr>
+<tr><td style="text-align: right">24191190</td><td style="text-align: right">50</td></tr>
+<tr><td style="text-align: right">24191191</td><td style="text-align: right">167</td></tr>
+<tr><td style="text-align: right">24191192</td><td style="text-align: right">132</td></tr>
+<tr><td style="text-align: right">24191193</td><td style="text-align: right">131</td></tr>
+<tr><td style="text-align: right">24191194</td><td style="text-align: right">97</td></tr>
+<tr><td style="text-align: right">24191195</td><td style="text-align: right">124</td></tr>
+<tr><td style="text-align: right">24191196</td><td style="text-align: right">99</td></tr>
+<tr><td style="text-align: right">24191197</td><td style="text-align: right">99</td></tr>
+<tr><td style="text-align: right">24191198</td><td style="text-align: right">113</td></tr>
+<tr><td style="text-align: right">24191199</td><td style="text-align: right">104</td></tr>
+<tr><td style="text-align: right">24191200</td><td style="text-align: right">113</td></tr>
+<tr><td style="text-align: right">24191201</td><td style="text-align: right">135</td></tr>
+<tr><td style="text-align: right">24191202</td><td style="text-align: right">157</td></tr>
+<tr><td style="text-align: right">24191203</td><td style="text-align: right">120</td></tr>
+<tr><td style="text-align: right">24191204</td><td style="text-align: right">120</td></tr>
+<tr><td style="text-align: right">24191205</td><td style="text-align: right">131</td></tr>
+<tr><td style="text-align: right">24191206</td><td style="text-align: right">186</td></tr>
+<tr><td style="text-align: right">24191207</td><td style="text-align: right">116</td></tr>
+<tr><td style="text-align: right">24191208</td><td style="text-align: right">108</td></tr>
+<tr><td style="text-align: right">24191209</td><td style="text-align: right">44</td></tr>
+<tr><td style="text-align: right">24191210</td><td style="text-align: right">181</td></tr>
+<tr><td style="text-align: right">24191211</td><td style="text-align: right">119</td></tr>
+<tr><td style="text-align: right">24191212</td><td style="text-align: right">114</td></tr>
+<tr><td style="text-align: right">24191213</td><td style="text-align: right">111</td></tr>
+<tr><td style="text-align: right">24191214</td><td style="text-align: right">135</td></tr>
+<tr><td style="text-align: right">24191215</td><td style="text-align: right">167</td></tr>
+<tr><td style="text-align: right">24191216</td><td style="text-align: right">61</td></tr>
+<tr><td style="text-align: right">24191217</td><td style="text-align: right">155</td></tr>
+<tr><td style="text-align: right">24191218</td><td style="text-align: right">131</td></tr>
+<tr><td style="text-align: right">24191219</td><td style="text-align: right">143</td></tr>
+<tr><td style="text-align: right">24191220</td><td style="text-align: right">4</td></tr>
+<tr><td style="text-align: right">24191221</td><td style="text-align: right">139</td></tr>
+<tr><td style="text-align: right">24191222</td><td style="text-align: right">66</td></tr>
+<tr><td style="text-align: right">24191223</td><td style="text-align: right">246</td></tr>
+<tr><td style="text-align: right">24191224</td><td style="text-align: right">194</td></tr>
+<tr><td style="text-align: right">24191225</td><td style="text-align: right">111</td></tr>
+<tr><td style="text-align: right">24191226</td><td style="text-align: right">153</td></tr>
+<tr><td style="text-align: right">24191227</td><td style="text-align: right">30</td></tr>
+<tr><td style="text-align: right">24191228</td><td style="text-align: right">136</td></tr>
+<tr><td style="text-align: right">24191229</td><td style="text-align: right">152</td></tr>
+<tr><td style="text-align: right">24191230</td><td style="text-align: right">112</td></tr>
+<tr><td style="text-align: right">24191231</td><td style="text-align: right">124</td></tr>
+<tr><td style="text-align: right">24191232</td><td style="text-align: right">123</td></tr>
+<tr><td style="text-align: right">24191233</td><td style="text-align: right">116</td></tr>
+<tr><td style="text-align: right">24191234</td><td style="text-align: right">71</td></tr>
+<tr><td style="text-align: right">24191235</td><td style="text-align: right">187</td></tr>
+<tr><td style="text-align: right">24191236</td><td style="text-align: right">89</td></tr>
+<tr><td style="text-align: right">24191237</td><td style="text-align: right">226</td></tr>
+<tr><td style="text-align: right">24191238</td><td style="text-align: right">145</td></tr>
+<tr><td style="text-align: right">24191239</td><td style="text-align: right">130</td></tr>
+<tr><td style="text-align: right">24191240</td><td style="text-align: right">120</td></tr>
+<tr><td style="text-align: right">24191241</td><td style="text-align: right">189</td></tr>
+<tr><td style="text-align: right">24191242</td><td style="text-align: right">3</td></tr>
+<tr><td style="text-align: right">24191243</td><td style="text-align: right">197</td></tr>
+<tr><td style="text-align: right">24191244</td><td style="text-align: right">117</td></tr>
+<tr><td style="text-align: right">24191245</td><td style="text-align: right">142</td></tr>
+<tr><td style="text-align: right">24191246</td><td style="text-align: right">144</td></tr>
+<tr><td style="text-align: right">24191247</td><td style="text-align: right">143</td></tr>
+<tr><td style="text-align: right">24191248</td><td style="text-align: right">166</td></tr>
+<tr><td style="text-align: right">24191249</td><td style="text-align: right">106</td></tr>
+<tr><td style="text-align: right">24191250</td><td style="text-align: right">35</td></tr>
+<tr><td style="text-align: right">24191251</td><td style="text-align: right">236</td></tr>
+<tr><td style="text-align: right">24191252</td><td style="text-align: right">141</td></tr>
+<tr><td style="text-align: right">24191253</td><td style="text-align: right">121</td></tr>
+<tr><td style="text-align: right">24191254</td><td style="text-align: right">109</td></tr>
+<tr><td style="text-align: right">24191255</td><td style="text-align: right">165</td></tr>
+<tr><td style="text-align: right">24191256</td><td style="text-align: right">125</td></tr>
+<tr><td style="text-align: right">24191257</td><td style="text-align: right">128</td></tr>
+<tr><td style="text-align: right">24191258</td><td style="text-align: right">130</td></tr>
+<tr><td style="text-align: right">24191259</td><td style="text-align: right">89</td></tr>
+<tr><td style="text-align: right">24191260</td><td style="text-align: right">126</td></tr>
+<tr><td style="text-align: right">24191261</td><td style="text-align: right">124</td></tr>
+<tr><td style="text-align: right">24191262</td><td style="text-align: right">118</td></tr>
+<tr><td style="text-align: right">24191263</td><td style="text-align: right">147</td></tr>
+<tr><td style="text-align: right">24191264</td><td style="text-align: right">108</td></tr>
+<tr><td style="text-align: right">24191265</td><td style="text-align: right">136</td></tr>
+<tr><td style="text-align: right">24191266</td><td style="text-align: right">159</td></tr>
+<tr><td style="text-align: right">24191267</td><td style="text-align: right">98</td></tr>
+<tr><td style="text-align: right">24191268</td><td style="text-align: right">157</td></tr>
+<tr><td style="text-align: right">24191269</td><td style="text-align: right">98</td></tr>
+<tr><td style="text-align: right">24191270</td><td style="text-align: right">100</td></tr>
+<tr><td style="text-align: right">24191271</td><td style="text-align: right">145</td></tr>
+<tr><td style="text-align: right">24191272</td><td style="text-align: right">119</td></tr>
+<tr><td style="text-align: right">24191273</td><td style="text-align: right">150</td></tr>
+<tr><td style="text-align: right">24191274</td><td style="text-align: right">119</td></tr>
+<tr><td style="text-align: right">24191275</td><td style="text-align: right">107</td></tr>
+<tr><td style="text-align: right">24191276</td><td style="text-align: right">127</td></tr>
+<tr><td style="text-align: right">24191277</td><td style="text-align: right">41</td></tr>
+<tr><td style="text-align: right">24191278</td><td style="text-align: right">236</td></tr>
+<tr><td style="text-align: right">24191279</td><td style="text-align: right">147</td></tr>
+<tr><td style="text-align: right">24191280</td><td style="text-align: right">86</td></tr>
+<tr><td style="text-align: right">24191281</td><td style="text-align: right">205</td></tr>
+<tr><td style="text-align: right">24191282</td><td style="text-align: right">117</td></tr>
+<tr><td style="text-align: right">24191283</td><td style="text-align: right">172</td></tr>
+<tr><td style="text-align: right">24191284</td><td style="text-align: right">122</td></tr>
+<tr><td style="text-align: right">24191285</td><td style="text-align: right">39</td></tr>
+<tr><td style="text-align: right">24191286</td><td style="text-align: right">177</td></tr>
+<tr><td style="text-align: right">24191287</td><td style="text-align: right">143</td></tr>
+<tr><td style="text-align: right">24191288</td><td style="text-align: right">118</td></tr>
+<tr><td style="text-align: right">24191289</td><td style="text-align: right">115</td></tr>
+<tr><td style="text-align: right">24191290</td><td style="text-align: right">146</td></tr>
+<tr><td style="text-align: right">24191291</td><td style="text-align: right">115</td></tr>
+<tr><td style="text-align: right">24191292</td><td style="text-align: right">173</td></tr>
+<tr><td style="text-align: right">24191293</td><td style="text-align: right">143</td></tr>
+<tr><td style="text-align: right">24191294</td><td style="text-align: right">118</td></tr>
+<tr><td style="text-align: right">24191295</td><td style="text-align: right">86</td></tr>
+<tr><td style="text-align: right">24191296</td><td style="text-align: right">159</td></tr>
+<tr><td style="text-align: right">24191297</td><td style="text-align: right">133</td></tr>
+<tr><td style="text-align: right">24191298</td><td style="text-align: right">154</td></tr>
+<tr><td style="text-align: right">24191299</td><td style="text-align: right">132</td></tr>
+<tr><td style="text-align: right">24191300</td><td style="text-align: right">118</td></tr>
+<tr><td style="text-align: right">24191301</td><td style="text-align: right">141</td></tr>
+<tr><td style="text-align: right">24191302</td><td style="text-align: right">111</td></tr>
+<tr><td style="text-align: right">24191303</td><td style="text-align: right">179</td></tr>
+<tr><td style="text-align: right">24191304</td><td style="text-align: right">86</td></tr>
+<tr><td style="text-align: right">24191305</td><td style="text-align: right">37</td></tr>
+<tr><td style="text-align: right">24191306</td><td style="text-align: right">171</td></tr>
+<tr><td style="text-align: right">24191307</td><td style="text-align: right">255</td></tr>
+<tr><td style="text-align: right">24191308</td><td style="text-align: right">211</td></tr>
+<tr><td style="text-align: right">24191309</td><td style="text-align: right">138</td></tr>
+<tr><td style="text-align: right">24191310</td><td style="text-align: right">133</td></tr>
+<tr><td style="text-align: right">24191311</td><td style="text-align: right">173</td></tr>
+<tr><td style="text-align: right">24191312</td><td style="text-align: right">153</td></tr>
+<tr><td style="text-align: right">24191313</td><td style="text-align: right">109</td></tr>
+<tr><td style="text-align: right">24191314</td><td style="text-align: right">135</td></tr>
+<tr><td style="text-align: right">24191315</td><td style="text-align: right">181</td></tr>
+<tr><td style="text-align: right">24191316</td><td style="text-align: right">128</td></tr>
+<tr><td style="text-align: right">24191317</td><td style="text-align: right">85</td></tr>
+<tr><td style="text-align: right">24191318</td><td style="text-align: right">126</td></tr>
+<tr><td style="text-align: right">24191319</td><td style="text-align: right">121</td></tr>
+<tr><td style="text-align: right">24191320</td><td style="text-align: right">83</td></tr>
+<tr><td style="text-align: right">24191321</td><td style="text-align: right">214</td></tr>
+<tr><td style="text-align: right">24191322</td><td style="text-align: right">197</td></tr>
+<tr><td style="text-align: right">24191323</td><td style="text-align: right">180</td></tr>
+<tr><td style="text-align: right">24191324</td><td style="text-align: right">141</td></tr>
+<tr><td style="text-align: right">24191325</td><td style="text-align: right">160</td></tr>
+<tr><td style="text-align: right">24191326</td><td style="text-align: right">128</td></tr>
+<tr><td style="text-align: right">24191327</td><td style="text-align: right">86</td></tr>
+<tr><td style="text-align: right">24191328</td><td style="text-align: right">181</td></tr>
+<tr><td style="text-align: right">24191329</td><td style="text-align: right">158</td></tr>
+<tr><td style="text-align: right">24191330</td><td style="text-align: right">84</td></tr>
+<tr><td style="text-align: right">24191331</td><td style="text-align: right">178</td></tr>
+<tr><td style="text-align: right">24191332</td><td style="text-align: right">134</td></tr>
+<tr><td style="text-align: right">24191333</td><td style="text-align: right">117</td></tr>
+<tr><td style="text-align: right">24191334</td><td style="text-align: right">128</td></tr>
+<tr><td style="text-align: right">24191335</td><td style="text-align: right">152</td></tr>
+<tr><td style="text-align: right">24191336</td><td style="text-align: right">139</td></tr>
+<tr><td style="text-align: right">24191337</td><td style="text-align: right">136</td></tr>
+<tr><td style="text-align: right">24191338</td><td style="text-align: right">170</td></tr>
+<tr><td style="text-align: right">24191339</td><td style="text-align: right">131</td></tr>
+<tr><td style="text-align: right">24191340</td><td style="text-align: right">136</td></tr>
+<tr><td style="text-align: right">24191341</td><td style="text-align: right">181</td></tr>
+<tr><td style="text-align: right">24191342</td><td style="text-align: right">126</td></tr>
+<tr><td style="text-align: right">24191343</td><td style="text-align: right">123</td></tr>
+<tr><td style="text-align: right">24191344</td><td style="text-align: right">168</td></tr>
+<tr><td style="text-align: right">24191345</td><td style="text-align: right">68</td></tr>
+<tr><td style="text-align: right">24191346</td><td style="text-align: right">42</td></tr>
+<tr><td style="text-align: right">24191347</td><td style="text-align: right">249</td></tr>
+<tr><td style="text-align: right">24191348</td><td style="text-align: right">172</td></tr>
+<tr><td style="text-align: right">24191349</td><td style="text-align: right">178</td></tr>
+<tr><td style="text-align: right">24191350</td><td style="text-align: right">127</td></tr>
+<tr><td style="text-align: right">24191351</td><td style="text-align: right">150</td></tr>
+<tr><td style="text-align: right">24191352</td><td style="text-align: right">138</td></tr>
+<tr><td style="text-align: right">24191353</td><td style="text-align: right">32</td></tr>
+</tbody></table>
+</div>
+<h4 id="on-demand"><a class="header" href="#on-demand">On-Demand</a></h4>
+<p><em>Total blocks analyzed: 176</em></p>
+<div class="table-wrapper"><table><thead><tr><th style="text-align: right">Block Number</th><th style="text-align: right">Time (ms)</th></tr></thead><tbody>
+<tr><td style="text-align: right">24190748</td><td style="text-align: right">228</td></tr>
+<tr><td style="text-align: right">24190749</td><td style="text-align: right">286</td></tr>
+<tr><td style="text-align: right">24190750</td><td style="text-align: right">308</td></tr>
+<tr><td style="text-align: right">24190751</td><td style="text-align: right">290</td></tr>
+<tr><td style="text-align: right">24190752</td><td style="text-align: right">272</td></tr>
+<tr><td style="text-align: right">24190753</td><td style="text-align: right">334</td></tr>
+<tr><td style="text-align: right">24190754</td><td style="text-align: right">208</td></tr>
+<tr><td style="text-align: right">24190755</td><td style="text-align: right">189</td></tr>
+<tr><td style="text-align: right">24190756</td><td style="text-align: right">118</td></tr>
+<tr><td style="text-align: right">24190757</td><td style="text-align: right">367</td></tr>
+<tr><td style="text-align: right">24190758</td><td style="text-align: right">128</td></tr>
+<tr><td style="text-align: right">24190759</td><td style="text-align: right">411</td></tr>
+<tr><td style="text-align: right">24190760</td><td style="text-align: right">226</td></tr>
+<tr><td style="text-align: right">24190761</td><td style="text-align: right">179</td></tr>
+<tr><td style="text-align: right">24190762</td><td style="text-align: right">451</td></tr>
+<tr><td style="text-align: right">24190763</td><td style="text-align: right">489</td></tr>
+<tr><td style="text-align: right">24190764</td><td style="text-align: right">350</td></tr>
+<tr><td style="text-align: right">24190765</td><td style="text-align: right">254</td></tr>
+<tr><td style="text-align: right">24190766</td><td style="text-align: right">304</td></tr>
+<tr><td style="text-align: right">24190767</td><td style="text-align: right">220</td></tr>
+<tr><td style="text-align: right">24190768</td><td style="text-align: right">154</td></tr>
+<tr><td style="text-align: right">24190769</td><td style="text-align: right">521</td></tr>
+<tr><td style="text-align: right">24190770</td><td style="text-align: right">56</td></tr>
+<tr><td style="text-align: right">24190771</td><td style="text-align: right">311</td></tr>
+<tr><td style="text-align: right">24190772</td><td style="text-align: right">436</td></tr>
+<tr><td style="text-align: right">24190773</td><td style="text-align: right">226</td></tr>
+<tr><td style="text-align: right">24190774</td><td style="text-align: right">235</td></tr>
+<tr><td style="text-align: right">24190775</td><td style="text-align: right">216</td></tr>
+<tr><td style="text-align: right">24190776</td><td style="text-align: right">222</td></tr>
+<tr><td style="text-align: right">24190777</td><td style="text-align: right">259</td></tr>
+<tr><td style="text-align: right">24190778</td><td style="text-align: right">165</td></tr>
+<tr><td style="text-align: right">24190779</td><td style="text-align: right">232</td></tr>
+<tr><td style="text-align: right">24190780</td><td style="text-align: right">197</td></tr>
+<tr><td style="text-align: right">24190781</td><td style="text-align: right">206</td></tr>
+<tr><td style="text-align: right">24190782</td><td style="text-align: right">424</td></tr>
+<tr><td style="text-align: right">24190783</td><td style="text-align: right">209</td></tr>
+<tr><td style="text-align: right">24190784</td><td style="text-align: right">232</td></tr>
+<tr><td style="text-align: right">24190785</td><td style="text-align: right">213</td></tr>
+<tr><td style="text-align: right">24190786</td><td style="text-align: right">262</td></tr>
+<tr><td style="text-align: right">24190787</td><td style="text-align: right">190</td></tr>
+<tr><td style="text-align: right">24190788</td><td style="text-align: right">233</td></tr>
+<tr><td style="text-align: right">24190789</td><td style="text-align: right">206</td></tr>
+<tr><td style="text-align: right">24190790</td><td style="text-align: right">178</td></tr>
+<tr><td style="text-align: right">24190791</td><td style="text-align: right">277</td></tr>
+<tr><td style="text-align: right">24190792</td><td style="text-align: right">167</td></tr>
+<tr><td style="text-align: right">24190793</td><td style="text-align: right">329</td></tr>
+<tr><td style="text-align: right">24190794</td><td style="text-align: right">408</td></tr>
+<tr><td style="text-align: right">24190795</td><td style="text-align: right">368</td></tr>
+<tr><td style="text-align: right">24190796</td><td style="text-align: right">160</td></tr>
+<tr><td style="text-align: right">24190797</td><td style="text-align: right">221</td></tr>
+<tr><td style="text-align: right">24190798</td><td style="text-align: right">208</td></tr>
+<tr><td style="text-align: right">24190799</td><td style="text-align: right">296</td></tr>
+<tr><td style="text-align: right">24190800</td><td style="text-align: right">256</td></tr>
+<tr><td style="text-align: right">24190801</td><td style="text-align: right">222</td></tr>
+<tr><td style="text-align: right">24190802</td><td style="text-align: right">131</td></tr>
+<tr><td style="text-align: right">24190803</td><td style="text-align: right">318</td></tr>
+<tr><td style="text-align: right">24190804</td><td style="text-align: right">270</td></tr>
+<tr><td style="text-align: right">24190805</td><td style="text-align: right">179</td></tr>
+<tr><td style="text-align: right">24190806</td><td style="text-align: right">220</td></tr>
+<tr><td style="text-align: right">24190807</td><td style="text-align: right">201</td></tr>
+<tr><td style="text-align: right">24190808</td><td style="text-align: right">205</td></tr>
+<tr><td style="text-align: right">24190809</td><td style="text-align: right">279</td></tr>
+<tr><td style="text-align: right">24190810</td><td style="text-align: right">252</td></tr>
+<tr><td style="text-align: right">24190811</td><td style="text-align: right">140</td></tr>
+<tr><td style="text-align: right">24190812</td><td style="text-align: right">378</td></tr>
+<tr><td style="text-align: right">24190813</td><td style="text-align: right">221</td></tr>
+<tr><td style="text-align: right">24190814</td><td style="text-align: right">325</td></tr>
+<tr><td style="text-align: right">24190815</td><td style="text-align: right">241</td></tr>
+<tr><td style="text-align: right">24190816</td><td style="text-align: right">186</td></tr>
+<tr><td style="text-align: right">24190817</td><td style="text-align: right">193</td></tr>
+<tr><td style="text-align: right">24190818</td><td style="text-align: right">174</td></tr>
+<tr><td style="text-align: right">24190819</td><td style="text-align: right">327</td></tr>
+<tr><td style="text-align: right">24190820</td><td style="text-align: right">210</td></tr>
+<tr><td style="text-align: right">24190821</td><td style="text-align: right">208</td></tr>
+<tr><td style="text-align: right">24190822</td><td style="text-align: right">195</td></tr>
+<tr><td style="text-align: right">24190823</td><td style="text-align: right">244</td></tr>
+<tr><td style="text-align: right">24190824</td><td style="text-align: right">80</td></tr>
+<tr><td style="text-align: right">24190825</td><td style="text-align: right">128</td></tr>
+<tr><td style="text-align: right">24190826</td><td style="text-align: right">363</td></tr>
+<tr><td style="text-align: right">24190827</td><td style="text-align: right">231</td></tr>
+<tr><td style="text-align: right">24190828</td><td style="text-align: right">286</td></tr>
+<tr><td style="text-align: right">24190829</td><td style="text-align: right">368</td></tr>
+<tr><td style="text-align: right">24190830</td><td style="text-align: right">198</td></tr>
+<tr><td style="text-align: right">24190831</td><td style="text-align: right">293</td></tr>
+<tr><td style="text-align: right">24190832</td><td style="text-align: right">275</td></tr>
+<tr><td style="text-align: right">24190833</td><td style="text-align: right">309</td></tr>
+<tr><td style="text-align: right">24190834</td><td style="text-align: right">219</td></tr>
+<tr><td style="text-align: right">24190835</td><td style="text-align: right">91</td></tr>
+<tr><td style="text-align: right">24190836</td><td style="text-align: right">319</td></tr>
+<tr><td style="text-align: right">24190837</td><td style="text-align: right">269</td></tr>
+<tr><td style="text-align: right">24190838</td><td style="text-align: right">292</td></tr>
+<tr><td style="text-align: right">24190839</td><td style="text-align: right">193</td></tr>
+<tr><td style="text-align: right">24190840</td><td style="text-align: right">203</td></tr>
+<tr><td style="text-align: right">24190841</td><td style="text-align: right">188</td></tr>
+<tr><td style="text-align: right">24190842</td><td style="text-align: right">124</td></tr>
+<tr><td style="text-align: right">24190843</td><td style="text-align: right">305</td></tr>
+<tr><td style="text-align: right">24190844</td><td style="text-align: right">236</td></tr>
+<tr><td style="text-align: right">24190845</td><td style="text-align: right">179</td></tr>
+<tr><td style="text-align: right">24190846</td><td style="text-align: right">148</td></tr>
+<tr><td style="text-align: right">24190847</td><td style="text-align: right">280</td></tr>
+<tr><td style="text-align: right">24190848</td><td style="text-align: right">208</td></tr>
+<tr><td style="text-align: right">24190849</td><td style="text-align: right">265</td></tr>
+<tr><td style="text-align: right">24190850</td><td style="text-align: right">197</td></tr>
+<tr><td style="text-align: right">24190851</td><td style="text-align: right">225</td></tr>
+<tr><td style="text-align: right">24190852</td><td style="text-align: right">266</td></tr>
+<tr><td style="text-align: right">24190853</td><td style="text-align: right">181</td></tr>
+<tr><td style="text-align: right">24190854</td><td style="text-align: right">225</td></tr>
+<tr><td style="text-align: right">24190855</td><td style="text-align: right">256</td></tr>
+<tr><td style="text-align: right">24190856</td><td style="text-align: right">216</td></tr>
+<tr><td style="text-align: right">24190857</td><td style="text-align: right">374</td></tr>
+<tr><td style="text-align: right">24190858</td><td style="text-align: right">225</td></tr>
+<tr><td style="text-align: right">24190859</td><td style="text-align: right">296</td></tr>
+<tr><td style="text-align: right">24190860</td><td style="text-align: right">175</td></tr>
+<tr><td style="text-align: right">24190861</td><td style="text-align: right">171</td></tr>
+<tr><td style="text-align: right">24190862</td><td style="text-align: right">406</td></tr>
+<tr><td style="text-align: right">24190863</td><td style="text-align: right">236</td></tr>
+<tr><td style="text-align: right">24190864</td><td style="text-align: right">196</td></tr>
+<tr><td style="text-align: right">24190865</td><td style="text-align: right">184</td></tr>
+<tr><td style="text-align: right">24190866</td><td style="text-align: right">265</td></tr>
+<tr><td style="text-align: right">24190867</td><td style="text-align: right">172</td></tr>
+<tr><td style="text-align: right">24190868</td><td style="text-align: right">123</td></tr>
+<tr><td style="text-align: right">24190869</td><td style="text-align: right">470</td></tr>
+<tr><td style="text-align: right">24190870</td><td style="text-align: right">184</td></tr>
+<tr><td style="text-align: right">24190871</td><td style="text-align: right">244</td></tr>
+<tr><td style="text-align: right">24190872</td><td style="text-align: right">172</td></tr>
+<tr><td style="text-align: right">24190873</td><td style="text-align: right">99</td></tr>
+<tr><td style="text-align: right">24190874</td><td style="text-align: right">387</td></tr>
+<tr><td style="text-align: right">24190875</td><td style="text-align: right">209</td></tr>
+<tr><td style="text-align: right">24190876</td><td style="text-align: right">207</td></tr>
+<tr><td style="text-align: right">24190877</td><td style="text-align: right">133</td></tr>
+<tr><td style="text-align: right">24190878</td><td style="text-align: right">161</td></tr>
+<tr><td style="text-align: right">24190879</td><td style="text-align: right">223</td></tr>
+<tr><td style="text-align: right">24190880</td><td style="text-align: right">217</td></tr>
+<tr><td style="text-align: right">24190881</td><td style="text-align: right">234</td></tr>
+<tr><td style="text-align: right">24190882</td><td style="text-align: right">261</td></tr>
+<tr><td style="text-align: right">24190883</td><td style="text-align: right">203</td></tr>
+<tr><td style="text-align: right">24190884</td><td style="text-align: right">234</td></tr>
+<tr><td style="text-align: right">24190885</td><td style="text-align: right">263</td></tr>
+<tr><td style="text-align: right">24190886</td><td style="text-align: right">193</td></tr>
+<tr><td style="text-align: right">24190887</td><td style="text-align: right">211</td></tr>
+<tr><td style="text-align: right">24190888</td><td style="text-align: right">168</td></tr>
+<tr><td style="text-align: right">24190889</td><td style="text-align: right">344</td></tr>
+<tr><td style="text-align: right">24190890</td><td style="text-align: right">88</td></tr>
+<tr><td style="text-align: right">24190891</td><td style="text-align: right">399</td></tr>
+<tr><td style="text-align: right">24190892</td><td style="text-align: right">191</td></tr>
+<tr><td style="text-align: right">24190893</td><td style="text-align: right">244</td></tr>
+<tr><td style="text-align: right">24190894</td><td style="text-align: right">140</td></tr>
+<tr><td style="text-align: right">24190895</td><td style="text-align: right">195</td></tr>
+<tr><td style="text-align: right">24190896</td><td style="text-align: right">275</td></tr>
+<tr><td style="text-align: right">24190897</td><td style="text-align: right">121</td></tr>
+<tr><td style="text-align: right">24190898</td><td style="text-align: right">462</td></tr>
+<tr><td style="text-align: right">24190899</td><td style="text-align: right">291</td></tr>
+<tr><td style="text-align: right">24190900</td><td style="text-align: right">192</td></tr>
+<tr><td style="text-align: right">24190901</td><td style="text-align: right">183</td></tr>
+<tr><td style="text-align: right">24190902</td><td style="text-align: right">268</td></tr>
+<tr><td style="text-align: right">24190903</td><td style="text-align: right">294</td></tr>
+<tr><td style="text-align: right">24190904</td><td style="text-align: right">277</td></tr>
+<tr><td style="text-align: right">24190905</td><td style="text-align: right">271</td></tr>
+<tr><td style="text-align: right">24190906</td><td style="text-align: right">190</td></tr>
+<tr><td style="text-align: right">24190907</td><td style="text-align: right">222</td></tr>
+<tr><td style="text-align: right">24190908</td><td style="text-align: right">109</td></tr>
+<tr><td style="text-align: right">24190909</td><td style="text-align: right">335</td></tr>
+<tr><td style="text-align: right">24190910</td><td style="text-align: right">252</td></tr>
+<tr><td style="text-align: right">24190911</td><td style="text-align: right">91</td></tr>
+<tr><td style="text-align: right">24190912</td><td style="text-align: right">143</td></tr>
+<tr><td style="text-align: right">24190913</td><td style="text-align: right">414</td></tr>
+<tr><td style="text-align: right">24190914</td><td style="text-align: right">73</td></tr>
+<tr><td style="text-align: right">24190915</td><td style="text-align: right">457</td></tr>
+<tr><td style="text-align: right">24190916</td><td style="text-align: right">93</td></tr>
+<tr><td style="text-align: right">24190917</td><td style="text-align: right">148</td></tr>
+<tr><td style="text-align: right">24190918</td><td style="text-align: right">479</td></tr>
+<tr><td style="text-align: right">24190919</td><td style="text-align: right">156</td></tr>
+<tr><td style="text-align: right">24190920</td><td style="text-align: right">80</td></tr>
+<tr><td style="text-align: right">24190921</td><td style="text-align: right">421</td></tr>
+<tr><td style="text-align: right">24190922</td><td style="text-align: right">411</td></tr>
+<tr><td style="text-align: right">24190923</td><td style="text-align: right">220</td></tr>
+</tbody></table>
+</div><div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <style>
 .mdbook-alerts {
   padding: 8px 16px;
@@ -9629,12 +10617,6 @@ To do this, they compute a merkle proof for the included batch and call the L1 <
 <li><strong><code>verifyBatchesAligned()</code></strong>: Verifies multiple batches in sequence using aligned proofs with Merkle verification</li>
 </ul>
 </li>
-<li>
-<p><strong>State Validation</strong></p>
-<ul>
-<li><strong><code>_verifyPublicData()</code></strong>: Internal function used during <code>verifyBatch()</code> or <code>verifyBatchesAligned()</code> that validates public proof inputs match previous data from <code>commitBatch()</code></li>
-</ul>
-</li>
 </ol>
 <h2 id="l2-contracts-1"><a class="header" href="#l2-contracts-1">L2 Contracts</a></h2>
 <h3 id="commonbridgel2"><a class="header" href="#commonbridgel2"><code>CommonBridgeL2</code></a></h3>
@@ -10194,7 +11176,7 @@ TODO: add updated graph with L1 block time distribution
 <li><strong>Front-running and Sandwiching Attacks:</strong> Lead Sequencers have the right to reorder transactions as they like and we expect they'll use this to extract MEV, including front-running and sandwiching attacks, which impact user experience. We don't have plans to address this at the protocol level, but we expect solutions to appear at the application level, same as in L1.</li>
 <li><strong>No Sequencers Scenario:</strong> If a sequencing period has no elected Lead Sequencer, we establish Full Anarchy during that period, so anyone can advance the chain. This is a last resort, and we don't expect this happening in practice.</li>
 </ul>
-<h2 id="conclusion-1"><a class="header" href="#conclusion-1">Conclusion</a></h2>
+<h2 id="conclusion-2"><a class="header" href="#conclusion-2">Conclusion</a></h2>
 <p>To preserve decentralization and permissionlessness, we chose ticket auctions for leader election, at the expense of preconfirmations and composability.</p>
 <p>As mentioned at the beginning, this approach does not fully align with <a href="https://ethresear.ch/t/based-rollups-superpowers-from-l1-sequencing/15016">Justin Drake's definition</a> of "based" rollups but is "based enough" to serve as a starting point. Although the current design cannot guarantee that sequencing rights are assigned exclusively to the L1 proposer for each slot, we're interested in achieving this, and will do so once the conditions are met, namely, that L1 proposer lookahead is available.</p>
 <p>So what about "based" Ethrex tomorrow? Eventually, there will be enough incentives for L1 proposers to either run their own L2 Sequencers or delegate their L1 rights to an external one. At that stage, the auction and assignment of L2 sequencing rights will be linked to the current L1 proposer or their delegated Sequencer. Periods may also adjust as lookahead tables, such as the <a href="https://eips.ethereum.org/EIPS/eip-7917">Deterministic Lookahead Proposal</a> or <a href="https://eth-fabric.github.io/website/research/raid">RAID</a>, become viable.</p>
@@ -10628,6 +11610,120 @@ Each method accepts a single argument: the <strong><code>block_number</code></st
 }
 
 </style>
+<h1 id="timelock-contract"><a class="header" href="#timelock-contract">Timelock Contract</a></h1>
+<p>The Timelock contract gates access to the OnChainProposer (OCP) contract. Changes to the OCP can only be made by first interacting with the Timelock, which manages permissions based on roles assigned to different users.</p>
+<h2 id="timelock-roles"><a class="header" href="#timelock-roles">Timelock Roles</a></h2>
+<ul>
+<li>Sequencers: Can commit and verify batches.</li>
+<li>Governance: Can schedule and execute operations, respecting a delay. In practice this could be the role of a DAO, though it depends on the implementation.</li>
+<li>Security Council: Can bypass the minimum delay for executing any operation that the Timelock can execute. It can also manage other roles in the Timelock.</li>
+</ul>
+<p><strong>Sequencers</strong> will send <code>commitBatch</code>, <code>verifyBatch</code>, and <code>verifyBatchesAligned</code> to the Timelock, and this will execute the operations in the <code>OnChainProposer</code>. Eventually there will be Timelock logic, and there will be a time window between commitment and proof verification for security reasons.</p>
+<p>The <strong>Governance</strong> is able to schedule important operations like contract upgrades respecting the minimum time window for the L2 participants to exit in case of undesired updates. Not only can they make changes in the logic of the OnChainProposer, but they can also update the Timelock itself.</p>
+<p>The <strong>Security Council</strong> is designed as a powerful entity that can execute anything within the Timelock or OnChainProposer without delay. We call it security council because its actions are limitless, as it can upgrade any of the contracts whenever it wants, so ideally it should be a multisig composed of many diverse members, and it should be able to take action only if 75% of members agree. Ideally, in a more mature rollup the Security Council would have fewer permissions and would only need to act upon bugs detected on-chain if such a mechanism exists.
+We call this mechanism of executing without delay the <code>emergencyExecute</code>.</p>
+<h2 id="basic-functionalities"><a class="header" href="#basic-functionalities">Basic Functionalities</a></h2>
+<p>These are the things that we can do with the Timelock:</p>
+<ul>
+<li>Schedule: <code>schedule(...)</code> and <code>scheduleBatch(...)</code></li>
+<li>Execute: <code>execute(...)</code> and <code>executeBatch(...)</code></li>
+<li>Cancel: <code>cancel(bytes32 id)</code></li>
+<li>Update Delay: <code>updateDelay(uint256 newDelay)</code></li>
+</ul>
+<p>When an operation is <strong>scheduled</strong>, the Governance role may <strong>cancel</strong> it or, after the established delay, <strong>execute</strong> it.
+The delay can be updated, always respecting the current delay to do so.</p>
+<p>It also has a few utility functions:</p>
+<ul>
+<li><code>getMinDelay()</code>: current minimum delay for new schedules.</li>
+<li><code>hashOperation(...)</code>, <code>hashOperationBatch(...)</code>: pure helpers to compute ids.</li>
+<li><code>getTimestamp(id)</code>, <code>getOperationState(id)</code>, <code>isOperation*</code>: query operation status.</li>
+</ul>
+<p>Remember that <code>Timelock</code> inherits from <code>TimelockControllerUpgradeable</code> (which itself extends <code>AccessControlUpgradeable</code>) and <code>UUPSUpgradeable</code>, so it will inherit their behavior as well.</p>
+<h2 id="important-remarks"><a class="header" href="#important-remarks">Important Remarks</a></h2>
+<h3 id="operation-id-collision"><a class="header" href="#operation-id-collision">Operation ID collision</a></h3>
+<p>Every scheduled operation is identified by a 32-byte <strong>operation id</strong>. This ID is determined by hashing fields like the target address, value transferred, data, predecessor, and salt.
+Two operations with the same fields will result in the same ID. That's why, if we want to schedule the same operation more than once, we should probably use a salt.
+Example: If for some reason we want to schedule the pause of the OnChainProposer and we use salt zero, the next time we schedule that same operation we'll have to change the salt (assuming no predecessor was specified) in order for the id to be different.</p>
+<h3 id="cancelling-a-scheduled-operation"><a class="header" href="#cancelling-a-scheduled-operation">Cancelling a scheduled operation</a></h3>
+<p><code>cancel(bytes32 id)</code> requires the operation id. You typically get it by:</p>
+<ol>
+<li>Reading it from the <code>CallScheduled(id, ...)</code> event emitted by <code>schedule</code>/<code>scheduleBatch</code>, or</li>
+<li>Computing it yourself (off-chain), or</li>
+<li>Calling <code>hashOperation(...)</code> / <code>hashOperationBatch(...)</code> on-chain to compute it.</li>
+</ol>
+<p>Note that:</p>
+<ul>
+<li><code>hashOperation(...) = keccak256(abi.encode(target, value, data, predecessor, salt))</code></li>
+<li><code>hashOperationBatch(...) = keccak256(abi.encode(targets, values, payloads, predecessor, salt))</code></li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
+<style>
+.mdbook-alerts {
+  padding: 8px 16px;
+  margin-bottom: 16px;
+  border-left: 0.25em solid var(--mdbook-alerts-color);
+}
+
+.mdbook-alerts > *:first-child {
+  margin-top: 0;
+}
+
+.mdbook-alerts > *:last-child {
+  margin-bottom: 0;
+}
+
+.mdbook-alerts-title {
+  display: flex;
+  font-weight: 600;
+  align-items: center;
+  line-height: 1;
+  color: var(--mdbook-alerts-color);
+  text-transform: capitalize;
+}
+
+.mdbook-alerts-icon {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  margin-right: 0.2em;
+  background-color: currentColor;
+  -webkit-mask: no-repeat center / 100%;
+  mask: no-repeat center / 100%;
+  -webkit-mask-image: var(--mdbook-alerts-icon);
+  mask-image: var(--mdbook-alerts-icon);
+}
+
+.mdbook-alerts-note {
+  --mdbook-alerts-color: rgb(9, 105, 218);
+  /* https://icon-sets.iconify.design/material-symbols/info-outline-rounded/ */
+  --mdbook-alerts-icon: url('data:image/svg+xml,%3Csvg xmlns="http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg" width="24" height="24" viewBox="0 0 24 24"%3E%3Cpath fill="currentColor" d="M12 17q.425 0 .713-.288T13 16v-4q0-.425-.288-.712T12 11q-.425 0-.712.288T11 12v4q0 .425.288.713T12 17m0-8q.425 0 .713-.288T13 8q0-.425-.288-.712T12 7q-.425 0-.712.288T11 8q0 .425.288.713T12 9m0 13q-2.075 0-3.9-.788t-3.175-2.137q-1.35-1.35-2.137-3.175T2 12q0-2.075.788-3.9t2.137-3.175q1.35-1.35 3.175-2.137T12 2q2.075 0 3.9.788t3.175 2.137q1.35 1.35 2.138 3.175T22 12q0 2.075-.788 3.9t-2.137 3.175q-1.35 1.35-3.175 2.138T12 22m0-2q3.35 0 5.675-2.325T20 12q0-3.35-2.325-5.675T12 4Q8.65 4 6.325 6.325T4 12q0 3.35 2.325 5.675T12 20m0-8"%2F%3E%3C%2Fsvg%3E');
+}
+
+.mdbook-alerts-tip {
+  --mdbook-alerts-color: rgb(26, 127, 55);
+  /* https://icon-sets.iconify.design/material-symbols/lightbulb-outline-rounded/ */
+  --mdbook-alerts-icon: url('data:image/svg+xml,%3Csvg xmlns="http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg" width="24" height="24" viewBox="0 0 24 24"%3E%3Cpath fill="currentColor" d="M12 22q-.825 0-1.412-.587T10 20h4q0 .825-.587 1.413T12 22m-3-3q-.425 0-.712-.288T8 18q0-.425.288-.712T9 17h6q.425 0 .713.288T16 18q0 .425-.288.713T15 19zm-.75-3q-1.725-1.025-2.738-2.75T4.5 9.5q0-3.125 2.188-5.312T12 2q3.125 0 5.313 2.188T19.5 9.5q0 2.025-1.012 3.75T15.75 16zm.6-2h6.3q1.125-.8 1.738-1.975T17.5 9.5q0-2.3-1.6-3.9T12 4Q9.7 4 8.1 5.6T6.5 9.5q0 1.35.613 2.525T8.85 14M12 14"%2F%3E%3C%2Fsvg%3E');
+}
+
+.mdbook-alerts-important {
+  --mdbook-alerts-color: rgb(130, 80, 223);
+  /* https://icon-sets.iconify.design/material-symbols/chat-info-outline-rounded/ */
+  --mdbook-alerts-icon: url('data:image/svg+xml,%3Csvg xmlns="http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg" width="24" height="24" viewBox="0 0 24 24"%3E%3Cpath fill="currentColor" d="M12 7q.425 0 .713-.288T13 6q0-.425-.288-.712T12 5q-.425 0-.712.288T11 6q0 .425.288.713T12 7m0 8q.425 0 .713-.288T13 14v-4q0-.425-.288-.712T12 9q-.425 0-.712.288T11 10v4q0 .425.288.713T12 15m-6 3l-2.3 2.3q-.475.475-1.088.213T2 19.575V4q0-.825.588-1.412T4 2h16q.825 0 1.413.588T22 4v12q0 .825-.587 1.413T20 18zm-.85-2H20V4H4v13.125zM4 16V4z"%2F%3E%3C%2Fsvg%3E');
+}
+
+.mdbook-alerts-warning {
+  --mdbook-alerts-color: rgb(154, 103, 0);
+  /* https://icon-sets.iconify.design/material-symbols/warning-outline-rounded/ */
+  --mdbook-alerts-icon: url('data:image/svg+xml,%3Csvg xmlns="http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg" width="24" height="24" viewBox="0 0 24 24"%3E%3Cpath fill="currentColor" d="M2.725 21q-.275 0-.5-.137t-.35-.363q-.125-.225-.137-.488t.137-.512l9.25-16q.15-.25.388-.375T12 3q.25 0 .488.125t.387.375l9.25 16q.15.25.138.513t-.138.487q-.125.225-.35.363t-.5.137zm1.725-2h15.1L12 6zM12 18q.425 0 .713-.288T13 17q0-.425-.288-.712T12 16q-.425 0-.712.288T11 17q0 .425.288.713T12 18m0-3q.425 0 .713-.288T13 14v-3q0-.425-.288-.712T12 10q-.425 0-.712.288T11 11v3q0 .425.288.713T12 15m0-2.5"%2F%3E%3C%2Fsvg%3E');
+}
+
+.mdbook-alerts-caution {
+  --mdbook-alerts-color: rgb(207, 34, 46);
+  /* https://icon-sets.iconify.design/material-symbols/brightness-alert-outline-rounded/ */
+  --mdbook-alerts-icon: url('data:image/svg+xml,%3Csvg xmlns="http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg" width="24" height="24" viewBox="0 0 24 24"%3E%3Cpath fill="currentColor" d="M12 17q.425 0 .713-.288T13 16q0-.425-.288-.712T12 15q-.425 0-.712.288T11 16q0 .425.288.713T12 17m0-4q.425 0 .713-.288T13 12V8q0-.425-.288-.712T12 7q-.425 0-.712.288T11 8v4q0 .425.288.713T12 13m-3.35 7H6q-.825 0-1.412-.587T4 18v-2.65L2.075 13.4q-.275-.3-.425-.662T1.5 12q0-.375.15-.737t.425-.663L4 8.65V6q0-.825.588-1.412T6 4h2.65l1.95-1.925q.3-.275.663-.425T12 1.5q.375 0 .738.15t.662.425L15.35 4H18q.825 0 1.413.588T20 6v2.65l1.925 1.95q.275.3.425.663t.15.737q0 .375-.15.738t-.425.662L20 15.35V18q0 .825-.587 1.413T18 20h-2.65l-1.95 1.925q-.3.275-.662.425T12 22.5q-.375 0-.737-.15t-.663-.425zm.85-2l2.5 2.5l2.5-2.5H18v-3.5l2.5-2.5L18 9.5V6h-3.5L12 3.5L9.5 6H6v3.5L3.5 12L6 14.5V18zm2.5-6"%2F%3E%3C%2Fsvg%3E');
+}
+
+</style>
 <h1 id="fee-token-overview"><a class="header" href="#fee-token-overview">Fee Token Overview</a></h1>
 <p>Ethrex lets L2 transactions pay execution costs with an ERC-20 instead of ETH. A fee-token-enabled transaction behaves like a normal call or transfer, but the sequencer locks fees in the ERC-20 and distributes them (sender refund, coinbase priority fee, base-fee vault, operator vault, L1 data fee) using the hooks in <code>l2_hook.rs</code>.</p>
 <p>Key requirements:</p>
@@ -10846,8 +11942,552 @@ What should be done is</p>
 A message is considered expired if a certain deadline is reached and it has not yet been included in a batch on the destination chain. The <code>commonBridge</code> then prevents the sequencer from committing batches that contain non-privileged transactions (deposits and received messages) until all expired messages are included.</p>
 <h3 id="rollbacks"><a class="header" href="#rollbacks">Rollbacks</a></h3>
 <p>Once a cross-chain message is settled, there is no rollback mechanism in scenarios where the destination L2 either cannot or chooses not to execute the transaction. <a href="l2/fundamentals/shared_bridge.html#forced-inclusion">Forced Inclusion</a> guarantees that the destination sequencer will eventually have to execute the received message in order to include non-privileged transactions in a batch. Therefore, once a message is settled, the user waits for the destination L2 to include the message, just as when the user performs a deposit to that L2.</p>
-<h2 id="recommendations"><a class="header" href="#recommendations">Recommendations</a></h2>
+<h2 id="recommendations-1"><a class="header" href="#recommendations-1">Recommendations</a></h2>
 <p>We advice not to register more than 100 chains, since this will enquire a high cost when verifying a batch (About 1.6M gas), due to the transfers between bridges.</p>
+<div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
+<style>
+.mdbook-alerts {
+  padding: 8px 16px;
+  margin-bottom: 16px;
+  border-left: 0.25em solid var(--mdbook-alerts-color);
+}
+
+.mdbook-alerts > *:first-child {
+  margin-top: 0;
+}
+
+.mdbook-alerts > *:last-child {
+  margin-bottom: 0;
+}
+
+.mdbook-alerts-title {
+  display: flex;
+  font-weight: 600;
+  align-items: center;
+  line-height: 1;
+  color: var(--mdbook-alerts-color);
+  text-transform: capitalize;
+}
+
+.mdbook-alerts-icon {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  margin-right: 0.2em;
+  background-color: currentColor;
+  -webkit-mask: no-repeat center / 100%;
+  mask: no-repeat center / 100%;
+  -webkit-mask-image: var(--mdbook-alerts-icon);
+  mask-image: var(--mdbook-alerts-icon);
+}
+
+.mdbook-alerts-note {
+  --mdbook-alerts-color: rgb(9, 105, 218);
+  /* https://icon-sets.iconify.design/material-symbols/info-outline-rounded/ */
+  --mdbook-alerts-icon: url('data:image/svg+xml,%3Csvg xmlns="http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg" width="24" height="24" viewBox="0 0 24 24"%3E%3Cpath fill="currentColor" d="M12 17q.425 0 .713-.288T13 16v-4q0-.425-.288-.712T12 11q-.425 0-.712.288T11 12v4q0 .425.288.713T12 17m0-8q.425 0 .713-.288T13 8q0-.425-.288-.712T12 7q-.425 0-.712.288T11 8q0 .425.288.713T12 9m0 13q-2.075 0-3.9-.788t-3.175-2.137q-1.35-1.35-2.137-3.175T2 12q0-2.075.788-3.9t2.137-3.175q1.35-1.35 3.175-2.137T12 2q2.075 0 3.9.788t3.175 2.137q1.35 1.35 2.138 3.175T22 12q0 2.075-.788 3.9t-2.137 3.175q-1.35 1.35-3.175 2.138T12 22m0-2q3.35 0 5.675-2.325T20 12q0-3.35-2.325-5.675T12 4Q8.65 4 6.325 6.325T4 12q0 3.35 2.325 5.675T12 20m0-8"%2F%3E%3C%2Fsvg%3E');
+}
+
+.mdbook-alerts-tip {
+  --mdbook-alerts-color: rgb(26, 127, 55);
+  /* https://icon-sets.iconify.design/material-symbols/lightbulb-outline-rounded/ */
+  --mdbook-alerts-icon: url('data:image/svg+xml,%3Csvg xmlns="http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg" width="24" height="24" viewBox="0 0 24 24"%3E%3Cpath fill="currentColor" d="M12 22q-.825 0-1.412-.587T10 20h4q0 .825-.587 1.413T12 22m-3-3q-.425 0-.712-.288T8 18q0-.425.288-.712T9 17h6q.425 0 .713.288T16 18q0 .425-.288.713T15 19zm-.75-3q-1.725-1.025-2.738-2.75T4.5 9.5q0-3.125 2.188-5.312T12 2q3.125 0 5.313 2.188T19.5 9.5q0 2.025-1.012 3.75T15.75 16zm.6-2h6.3q1.125-.8 1.738-1.975T17.5 9.5q0-2.3-1.6-3.9T12 4Q9.7 4 8.1 5.6T6.5 9.5q0 1.35.613 2.525T8.85 14M12 14"%2F%3E%3C%2Fsvg%3E');
+}
+
+.mdbook-alerts-important {
+  --mdbook-alerts-color: rgb(130, 80, 223);
+  /* https://icon-sets.iconify.design/material-symbols/chat-info-outline-rounded/ */
+  --mdbook-alerts-icon: url('data:image/svg+xml,%3Csvg xmlns="http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg" width="24" height="24" viewBox="0 0 24 24"%3E%3Cpath fill="currentColor" d="M12 7q.425 0 .713-.288T13 6q0-.425-.288-.712T12 5q-.425 0-.712.288T11 6q0 .425.288.713T12 7m0 8q.425 0 .713-.288T13 14v-4q0-.425-.288-.712T12 9q-.425 0-.712.288T11 10v4q0 .425.288.713T12 15m-6 3l-2.3 2.3q-.475.475-1.088.213T2 19.575V4q0-.825.588-1.412T4 2h16q.825 0 1.413.588T22 4v12q0 .825-.587 1.413T20 18zm-.85-2H20V4H4v13.125zM4 16V4z"%2F%3E%3C%2Fsvg%3E');
+}
+
+.mdbook-alerts-warning {
+  --mdbook-alerts-color: rgb(154, 103, 0);
+  /* https://icon-sets.iconify.design/material-symbols/warning-outline-rounded/ */
+  --mdbook-alerts-icon: url('data:image/svg+xml,%3Csvg xmlns="http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg" width="24" height="24" viewBox="0 0 24 24"%3E%3Cpath fill="currentColor" d="M2.725 21q-.275 0-.5-.137t-.35-.363q-.125-.225-.137-.488t.137-.512l9.25-16q.15-.25.388-.375T12 3q.25 0 .488.125t.387.375l9.25 16q.15.25.138.513t-.138.487q-.125.225-.35.363t-.5.137zm1.725-2h15.1L12 6zM12 18q.425 0 .713-.288T13 17q0-.425-.288-.712T12 16q-.425 0-.712.288T11 17q0 .425.288.713T12 18m0-3q.425 0 .713-.288T13 14v-3q0-.425-.288-.712T12 10q-.425 0-.712.288T11 11v3q0 .425.288.713T12 15m0-2.5"%2F%3E%3C%2Fsvg%3E');
+}
+
+.mdbook-alerts-caution {
+  --mdbook-alerts-color: rgb(207, 34, 46);
+  /* https://icon-sets.iconify.design/material-symbols/brightness-alert-outline-rounded/ */
+  --mdbook-alerts-icon: url('data:image/svg+xml,%3Csvg xmlns="http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg" width="24" height="24" viewBox="0 0 24 24"%3E%3Cpath fill="currentColor" d="M12 17q.425 0 .713-.288T13 16q0-.425-.288-.712T12 15q-.425 0-.712.288T11 16q0 .425.288.713T12 17m0-4q.425 0 .713-.288T13 12V8q0-.425-.288-.712T12 7q-.425 0-.712.288T11 8v4q0 .425.288.713T12 13m-3.35 7H6q-.825 0-1.412-.587T4 18v-2.65L2.075 13.4q-.275-.3-.425-.662T1.5 12q0-.375.15-.737t.425-.663L4 8.65V6q0-.825.588-1.412T6 4h2.65l1.95-1.925q.3-.275.663-.425T12 1.5q.375 0 .738.15t.662.425L15.35 4H18q.825 0 1.413.588T20 6v2.65l1.925 1.95q.275.3.425.663t.15.737q0 .375-.15.738t-.425.662L20 15.35V18q0 .825-.587 1.413T18 20h-2.65l-1.95 1.925q-.3.275-.662.425T12 22.5q-.375 0-.737-.15t-.663-.425zm.85-2l2.5 2.5l2.5-2.5H18v-3.5l2.5-2.5L18 9.5V6h-3.5L12 3.5L9.5 6H6v3.5L3.5 12L6 14.5V18zm2.5-6"%2F%3E%3C%2Fsvg%3E');
+}
+
+</style>
+<h1 id="ethrex-l2-integration-with-aligned-layer"><a class="header" href="#ethrex-l2-integration-with-aligned-layer">Ethrex L2 Integration with Aligned Layer</a></h1>
+<p>This document provides a comprehensive technical overview of how ethrex L2 integrates with Aligned Layer for proof aggregation and verification.</p>
+<h2 id="table-of-contents"><a class="header" href="#table-of-contents">Table of Contents</a></h2>
+<ol>
+<li><a href="l2/fundamentals/ethrex_l2_aligned_integration.html#overview">Overview</a></li>
+<li><a href="l2/fundamentals/ethrex_l2_aligned_integration.html#what-is-aligned-layer">What is Aligned Layer?</a></li>
+<li><a href="l2/fundamentals/ethrex_l2_aligned_integration.html#architecture">Architecture</a></li>
+<li><a href="l2/fundamentals/ethrex_l2_aligned_integration.html#component-details">Component Details</a></li>
+<li><a href="l2/fundamentals/ethrex_l2_aligned_integration.html#smart-contract-integration">Smart Contract Integration</a></li>
+<li><a href="l2/fundamentals/ethrex_l2_aligned_integration.html#configuration">Configuration</a></li>
+<li><a href="l2/fundamentals/ethrex_l2_aligned_integration.html#behavioral-differences">Behavioral Differences</a></li>
+<li><a href="l2/fundamentals/ethrex_l2_aligned_integration.html#error-handling">Error Handling</a></li>
+<li><a href="l2/fundamentals/ethrex_l2_aligned_integration.html#monitoring">Monitoring</a></li>
+</ol>
+<hr />
+<h2 id="overview-2"><a class="header" href="#overview-2">Overview</a></h2>
+<p>Ethrex L2 supports two modes of proof verification:</p>
+<ol>
+<li><strong>Standard Mode</strong>: Proofs are verified directly on L1 via smart contract verifiers (SP1Verifier, RISC0Verifier, TDXVerifier)</li>
+<li><strong>Aligned Mode</strong>: Proofs are sent to Aligned Layer for aggregation, then verified on L1 via the <code>AlignedProofAggregatorService</code> contract</li>
+</ol>
+<p>Aligned mode offers significant cost savings by aggregating multiple proofs before on-chain verification, reducing the gas cost per proof verification.</p>
+<h3 id="key-benefits-of-aligned-mode"><a class="header" href="#key-benefits-of-aligned-mode">Key Benefits of Aligned Mode</a></h3>
+<ul>
+<li><strong>Lower verification costs</strong>: Proof aggregation amortizes verification costs across multiple proofs</li>
+<li><strong>Multi-batch verification</strong>: Multiple L2 batches can be verified in a single L1 transaction (via <code>verifyBatchesAligned()</code>)</li>
+<li><strong>Compressed proofs</strong>: Uses STARK compressed format instead of Groth16, optimized for aggregation</li>
+</ul>
+<hr />
+<h2 id="what-is-aligned-layer"><a class="header" href="#what-is-aligned-layer">What is Aligned Layer?</a></h2>
+<p><a href="https://docs.alignedlayer.com/">Aligned Layer</a> is a proof aggregation and verification infrastructure for Ethereum. It provides:</p>
+<ul>
+<li><strong>Proof Aggregation Service</strong>: Collects proofs from multiple sources and aggregates them</li>
+<li><strong>Batcher</strong>: Receives individual proofs and batches them for aggregation</li>
+<li><strong>On-chain Verification</strong>: Verifies aggregated proofs via the <code>AlignedProofAggregatorService</code> contract</li>
+<li><strong>SDK</strong>: Client libraries for submitting proofs and checking verification status</li>
+</ul>
+<h3 id="supported-proving-systems"><a class="header" href="#supported-proving-systems">Supported Proving Systems</a></h3>
+<p>Ethrex L2 supports the following proving systems with Aligned:</p>
+<div class="table-wrapper"><table><thead><tr><th>Prover Type</th><th>Aligned ProvingSystemId</th><th>Notes</th></tr></thead><tbody>
+<tr><td>SP1</td><td><code>ProvingSystemId::SP1</code></td><td>Compressed STARK format</td></tr>
+<tr><td>RISC0</td><td><code>ProvingSystemId::Risc0</code></td><td>Compressed STARK format</td></tr>
+</tbody></table>
+</div>
+<hr />
+<h2 id="architecture-1"><a class="header" href="#architecture-1">Architecture</a></h2>
+<h3 id="high-level-system-flow"><a class="header" href="#high-level-system-flow">High-Level System Flow</a></h3>
+<pre><code>┌──────────────────┐
+│      Prover      │ (Separate binary)
+│    (SP1/RISC0)   │
+└────────┬─────────┘
+         │ TCP
+         ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              ETHREX L2 NODE                                 │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  ┌──────────────────┐    ┌──────────────────┐    ┌──────────────────┐       │
+│  │ ProofCoordinator │───▶│  L1ProofSender   │───▶│  Aligned Batcher │       │
+│  │   (TCP Server)   │    │                  │    │   (WebSocket)    │       │
+│  └────────┬─────────┘    └────────┬─────────┘    └────────┬─────────┘       │
+│           │                       │                       │                 │
+│           ▼                       ▼                       │                 │
+│  ┌─────────────────────────────────────┐                  │                 │
+│  │          RollupStorage              │                  │                 │
+│  │     (Proofs, Batch State)           │                  │                 │
+│  └─────────────────────────────────────┘                  │                 │
+│                                                           │                 │
+└───────────────────────────────────────────────────────────┼─────────────────┘
+                                                            │
+                                                            ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           ALIGNED LAYER                                     │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  ┌──────────────────┐    ┌──────────────────┐    ┌──────────────────┐       │
+│  │  Proof Batcher   │───▶│ Proof Aggregator │───▶│  L1 Settlement   │       │
+│  │                  │    │   (SP1/RISC0)    │    │                  │       │
+│  └──────────────────┘    └──────────────────┘    └──────────────────┘       │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                                            │
+                                                            ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              ETHEREUM L1                                    │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  ┌─────────────────────────────────┐    ┌──────────────────────────────┐    │
+│  │      OnChainProposer            │───▶│ AlignedProofAggregatorService│    │
+│  │  (verifyBatchesAligned())       │    │   (Merkle proof validation)  │    │
+│  └─────────────────────────────────┘    └──────────────────────────────┘    │
+└─────────────────────────────────────────────────────────────────────────────┘
+</code></pre>
+<div class="mdbook-alerts mdbook-alerts-note">
+<p class="mdbook-alerts-title">
+  <span class="mdbook-alerts-icon"></span>
+  note
+</p>
+<p>The Prover runs as a separate binary outside the L2 node, connecting via TCP to the ProofCoordinator. For deployment instructions, see <a href="l2/fundamentals/../deployment/aligned.html">Running Ethrex in Aligned Mode</a>.</p>
+</div>
+<h3 id="component-interactions"><a class="header" href="#component-interactions">Component Interactions</a></h3>
+<h4 id="proof-sender-flow-aligned-mode"><a class="header" href="#proof-sender-flow-aligned-mode">Proof Sender Flow (Aligned Mode)</a></h4>
+<p><img src="l2/fundamentals/../img/aligned_mode_proof_sender.png" alt="Proof Sender Aligned Mode" /></p>
+<p>The proof sender tracks the last sent proof in the rollup storage and submits compressed proofs to the Aligned Batcher.</p>
+<h4 id="proof-verifier-flow-aligned-mode"><a class="header" href="#proof-verifier-flow-aligned-mode">Proof Verifier Flow (Aligned Mode)</a></h4>
+<p><img src="l2/fundamentals/../img/aligned_mode_proof_verifier.png" alt="Proof Verifier Aligned Mode" /></p>
+<p>The proof verifier:</p>
+<ol>
+<li>Queries <code>lastVerifiedBatch</code> from <code>OnChainProposer</code></li>
+<li>Checks proof aggregation status via <code>AlignedProofAggregatorService</code></li>
+<li>Calls <code>verifyBatchesAligned()</code> on <code>OnChainProposer</code></li>
+<li>Which internally calls <code>verifyProofInclusion()</code> on the aggregator service</li>
+</ol>
+<hr />
+<h2 id="component-details"><a class="header" href="#component-details">Component Details</a></h2>
+<h3 id="1-l1proofsender-l1_proof_senderrs"><a class="header" href="#1-l1proofsender-l1_proof_senderrs">1. L1ProofSender (<code>l1_proof_sender.rs</code>)</a></h3>
+<p>The <code>L1ProofSender</code> handles submitting proofs to Aligned Layer.</p>
+<p><strong>Key Responsibilities</strong>:</p>
+<ul>
+<li>Monitors for completed proofs in the rollup store</li>
+<li>Sends compressed proofs to the Aligned Batcher via WebSocket</li>
+<li>Tracks the last sent batch proof number</li>
+<li>Handles nonce management for the Aligned batcher</li>
+</ul>
+<p><strong>Aligned-Specific Logic</strong>:</p>
+<pre><pre class="playground"><code class="language-rust edition2024"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>async fn send_proof_to_aligned(
+    &amp;self,
+    batch_number: u64,
+    batch_proofs: impl IntoIterator&lt;Item = &amp;BatchProof&gt;,
+) -&gt; Result&lt;(), ProofSenderError&gt; {
+    // Estimate fee from Aligned
+    let fee_estimation = Self::estimate_fee(self).await?;
+
+    // Get nonce from Aligned batcher
+    let nonce = get_nonce_from_batcher(self.network.clone(), self.signer.address()).await?;
+
+    for batch_proof in batch_proofs {
+        // Build verification data for Aligned
+        let verification_data = VerificationData {
+            proving_system: match prover_type {
+                ProverType::RISC0 =&gt; ProvingSystemId::Risc0,
+                ProverType::SP1 =&gt; ProvingSystemId::SP1,
+            },
+            proof: batch_proof.compressed(),
+            proof_generator_addr: self.signer.address(),
+            vm_program_code: Some(vm_program_code),  // ELF or VK
+            pub_input: Some(batch_proof.public_values()),
+            verification_key: None,
+        };
+
+        // Submit to Aligned batcher
+        submit(self.network.clone(), &amp;verification_data, fee_estimation, wallet, nonce).await?;
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+<p>See the <a href="l2/fundamentals/ethrex_l2_aligned_integration.html#configuration">Configuration</a> section for <code>AlignedConfig</code> details.</p>
+<h3 id="2-l1proofverifier-l1_proof_verifierrs"><a class="header" href="#2-l1proofverifier-l1_proof_verifierrs">2. L1ProofVerifier (<code>l1_proof_verifier.rs</code>)</a></h3>
+<p>The <code>L1ProofVerifier</code> monitors Aligned Layer for aggregated proofs and triggers on-chain verification.</p>
+<p><strong>Key Responsibilities</strong>:</p>
+<ul>
+<li>Polls Aligned Layer to check if proofs have been aggregated</li>
+<li>Collects Merkle proofs of inclusion for verified proofs</li>
+<li>Batches multiple verified proofs into a single L1 transaction</li>
+<li>Calls <code>verifyBatchesAligned()</code> on the OnChainProposer contract</li>
+</ul>
+<p><strong>Verification Flow</strong>:</p>
+<pre><pre class="playground"><code class="language-rust edition2024"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>async fn verify_proofs_aggregation(&amp;self, first_batch_number: u64) -&gt; Result&lt;Option&lt;H256&gt;&gt; {
+    let mut sp1_merkle_proofs_list = Vec::new();
+    let mut risc0_merkle_proofs_list = Vec::new();
+
+    // For each consecutive batch
+    loop {
+        for (prover_type, proof) in proofs_for_batch {
+            // Build verification data
+            let verification_data = match prover_type {
+                ProverType::SP1 =&gt; AggregationModeVerificationData::SP1 {
+                    vk: self.sp1_vk,
+                    public_inputs: proof.public_values(),
+                },
+                ProverType::RISC0 =&gt; AggregationModeVerificationData::Risc0 {
+                    image_id: self.risc0_vk,
+                    public_inputs: proof.public_values(),
+                },
+            };
+
+            // Check if proof was aggregated by Aligned
+            if let Some((merkle_root, merkle_path)) =
+                self.check_proof_aggregation(verification_data).await?
+            {
+                aggregated_proofs.insert(prover_type, merkle_path);
+            }
+        }
+
+        // Collect merkle proofs for this batch
+        sp1_merkle_proofs_list.push(sp1_merkle_proof);
+        risc0_merkle_proofs_list.push(risc0_merkle_proof);
+    }
+
+    // Send single transaction to verify all batches
+    let calldata = encode_calldata(
+        "verifyBatchesAligned(uint256,uint256,bytes32[][],bytes32[][])",
+        &amp;[first_batch, last_batch, sp1_proofs, risc0_proofs]
+    );
+
+    send_verify_tx(calldata, target_address).await
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="3-prover-modification"><a class="header" href="#3-prover-modification">3. Prover Modification</a></h3>
+<p>In Aligned mode, the prover generates <strong>Compressed</strong> proofs instead of <strong>Groth16</strong> proofs.</p>
+<p><strong>Proof Format Selection</strong>:</p>
+<pre><pre class="playground"><code class="language-rust edition2024"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub enum ProofFormat {
+    /// Groth16 - EVM-friendly, for direct on-chain verification
+    Groth16,
+    /// Compressed STARK - For Aligned Layer aggregation
+    Compressed,
+}
+<span class="boring">}</span></code></pre></pre>
+<p><strong>BatchProof Types</strong>:</p>
+<pre><pre class="playground"><code class="language-rust edition2024"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub enum BatchProof {
+    /// For direct on-chain verification (Standard mode)
+    ProofCalldata(ProofCalldata),
+    /// For Aligned Layer submission (Aligned mode)
+    ProofBytes(ProofBytes),
+}
+
+pub struct ProofBytes {
+    pub prover_type: ProverType,
+    pub proof: Vec&lt;u8&gt;,           // Compressed STARK proof
+    pub public_values: Vec&lt;u8&gt;,   // Public inputs
+}
+<span class="boring">}</span></code></pre></pre>
+<hr />
+<h2 id="smart-contract-integration"><a class="header" href="#smart-contract-integration">Smart Contract Integration</a></h2>
+<h3 id="onchainproposer-contract"><a class="header" href="#onchainproposer-contract">OnChainProposer Contract</a></h3>
+<p>The <code>OnChainProposer.sol</code> contract supports both verification modes:</p>
+<p><strong>State Variables</strong>:</p>
+<pre><code class="language-solidity">/// True if verification is done through Aligned Layer
+bool public ALIGNED_MODE;
+
+/// Address of the AlignedProofAggregatorService contract
+address public ALIGNEDPROOFAGGREGATOR;
+
+/// Verification keys per git commit hash and verifier type
+mapping(bytes32 commitHash =&gt; mapping(uint8 verifierId =&gt; bytes32 vk))
+    public verificationKeys;
+</code></pre>
+<p><strong>Standard Verification</strong> (<code>verifyBatch</code>):</p>
+<pre><code class="language-solidity">function verifyBatch(
+    uint256 batchNumber,
+    bytes memory risc0BlockProof,
+    bytes memory sp1ProofBytes,
+    bytes memory tdxSignature
+) external onlyOwner whenNotPaused {
+    require(!ALIGNED_MODE, "008");  // Use verifyBatchesAligned instead
+
+    // Verify proofs directly via verifier contracts
+    if (REQUIRE_SP1_PROOF) {
+        ISP1Verifier(SP1_VERIFIER_ADDRESS).verifyProof(sp1Vk, publicInputs, sp1ProofBytes);
+    }
+    if (REQUIRE_RISC0_PROOF) {
+        IRiscZeroVerifier(RISC0_VERIFIER_ADDRESS).verify(risc0BlockProof, risc0Vk, sha256(publicInputs));
+    }
+}
+</code></pre>
+<p><strong>Aligned Verification</strong> (<code>verifyBatchesAligned</code>):</p>
+<pre><code class="language-solidity">function verifyBatchesAligned(
+    uint256 firstBatchNumber,
+    uint256 lastBatchNumber,
+    bytes32[][] calldata sp1MerkleProofsList,
+    bytes32[][] calldata risc0MerkleProofsList
+) external onlyOwner whenNotPaused {
+    require(ALIGNED_MODE, "00h");  // Use verifyBatch instead
+
+    for (uint256 i = 0; i &lt; batchesToVerify; i++) {
+        bytes memory publicInputs = _getPublicInputsFromCommitment(batchNumber);
+
+        if (REQUIRE_SP1_PROOF) {
+            _verifyProofInclusionAligned(
+                sp1MerkleProofsList[i],
+                verificationKeys[commitHash][SP1_VERIFIER_ID],
+                publicInputs
+            );
+        }
+
+        if (REQUIRE_RISC0_PROOF) {
+            _verifyProofInclusionAligned(
+                risc0MerkleProofsList[i],
+                verificationKeys[commitHash][RISC0_VERIFIER_ID],
+                publicInputs
+            );
+        }
+    }
+}
+</code></pre>
+<p><strong>Aligned Proof Inclusion Verification</strong>:</p>
+<pre><code class="language-solidity">function _verifyProofInclusionAligned(
+    bytes32[] calldata merkleProofsList,
+    bytes32 verificationKey,
+    bytes memory publicInputsList
+) internal view {
+    bytes memory callData = abi.encodeWithSignature(
+        "verifyProofInclusion(bytes32[],bytes32,bytes)",
+        merkleProofsList,
+        verificationKey,
+        publicInputsList
+    );
+
+    (bool callResult, bytes memory response) = ALIGNEDPROOFAGGREGATOR.staticcall(callData);
+    require(callResult, "00y");  // Call to ALIGNEDPROOFAGGREGATOR failed
+
+    bool proofVerified = abi.decode(response, (bool));
+    require(proofVerified, "00z");  // Aligned proof verification failed
+}
+</code></pre>
+<h3 id="public-inputs-structure"><a class="header" href="#public-inputs-structure">Public Inputs Structure</a></h3>
+<p>The public inputs for proof verification are reconstructed from batch commitments:</p>
+<pre><code>Fixed-size fields (256 bytes):
+├── bytes 0-32:    Initial state root (from last verified batch)
+├── bytes 32-64:   Final state root (from current batch)
+├── bytes 64-96:   Withdrawals merkle root
+├── bytes 96-128:  Processed privileged transactions rolling hash
+├── bytes 128-160: Blob KZG versioned hash
+├── bytes 160-192: Last block hash
+├── bytes 192-224: Chain ID
+└── bytes 224-256: Non-privileged transactions count
+
+Variable-size fields:
+├── For each balance diff:
+│   ├── Chain ID (32 bytes)
+│   ├── Value (32 bytes)
+│   └── Asset diffs + Message hashes
+└── For each L2 message rolling hash:
+    ├── Chain ID (32 bytes)
+    └── Rolling hash (32 bytes)
+</code></pre>
+<hr />
+<h2 id="configuration-4"><a class="header" href="#configuration-4">Configuration</a></h2>
+<h3 id="sequencer-configuration"><a class="header" href="#sequencer-configuration">Sequencer Configuration</a></h3>
+<pre><pre class="playground"><code class="language-rust edition2024"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub struct AlignedConfig {
+    /// Enable Aligned mode
+    pub aligned_mode: bool,
+
+    /// Interval (ms) between verification checks
+    pub aligned_verifier_interval_ms: u64,
+
+    /// Beacon client URLs for blob verification
+    pub beacon_urls: Vec&lt;Url&gt;,
+
+    /// Aligned network (devnet, testnet, mainnet)
+    pub network: Network,
+
+    /// Fee estimation type ("instant" or "default")
+    pub fee_estimate: String,
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="cli-flags"><a class="header" href="#cli-flags">CLI Flags</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Flag</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>--aligned</code></td><td>Enable Aligned mode</td></tr>
+<tr><td><code>--aligned-network</code></td><td>Network for Aligned SDK (devnet/testnet/mainnet)</td></tr>
+<tr><td><code>--aligned.beacon-url</code></td><td>Beacon client URL supporting <code>/eth/v1/beacon/blobs</code></td></tr>
+</tbody></table>
+</div>
+<h3 id="environment-variables"><a class="header" href="#environment-variables">Environment Variables</a></h3>
+<p><strong>Node Configuration:</strong></p>
+<div class="table-wrapper"><table><thead><tr><th>Variable</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>ETHREX_ALIGNED_MODE</code></td><td>Enable Aligned mode</td></tr>
+<tr><td><code>ETHREX_ALIGNED_BEACON_URL</code></td><td>Beacon client URL</td></tr>
+<tr><td><code>ETHREX_ALIGNED_NETWORK</code></td><td>Aligned network</td></tr>
+</tbody></table>
+</div>
+<p><strong>Deployer Configuration:</strong></p>
+<div class="table-wrapper"><table><thead><tr><th>Variable</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>ETHREX_L2_ALIGNED</code></td><td>Enable Aligned during deployment</td></tr>
+<tr><td><code>ETHREX_DEPLOYER_ALIGNED_AGGREGATOR_ADDRESS</code></td><td>Address of <code>AlignedProofAggregatorService</code></td></tr>
+</tbody></table>
+</div>
+<hr />
+<h2 id="behavioral-differences"><a class="header" href="#behavioral-differences">Behavioral Differences</a></h2>
+<h3 id="standard-mode-vs-aligned-mode"><a class="header" href="#standard-mode-vs-aligned-mode">Standard Mode vs Aligned Mode</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Aspect</th><th>Standard Mode</th><th>Aligned Mode</th></tr></thead><tbody>
+<tr><td><strong>Proof Format</strong></td><td>Groth16 (EVM-friendly)</td><td>Compressed STARK</td></tr>
+<tr><td><strong>Submission Target</strong></td><td>OnChainProposer contract</td><td>Aligned Batcher (WebSocket)</td></tr>
+<tr><td><strong>Verification Method</strong></td><td><code>verifyBatch()</code></td><td><code>verifyBatchesAligned()</code></td></tr>
+<tr><td><strong>Verifier Contract</strong></td><td>SP1Verifier/RISC0Verifier</td><td>AlignedProofAggregatorService</td></tr>
+<tr><td><strong>Batch Verification</strong></td><td>One batch per tx</td><td>Multiple batches per tx</td></tr>
+<tr><td><strong>Gas Cost</strong></td><td>Higher (per-proof verification)</td><td>Lower (amortized via aggregation)</td></tr>
+<tr><td><strong>Additional Component</strong></td><td>None</td><td>L1ProofVerifier process</td></tr>
+<tr><td><strong>Proof Tracking</strong></td><td>Via rollup store</td><td>Via Aligned SDK</td></tr>
+</tbody></table>
+</div>
+<h3 id="prover-differences"><a class="header" href="#prover-differences">Prover Differences</a></h3>
+<p><strong>Standard Mode</strong>:</p>
+<ul>
+<li>Generates Groth16 proof (calldata format)</li>
+<li>Proof sent directly to <code>OnChainProposer.verifyBatch()</code></li>
+</ul>
+<p><strong>Aligned Mode</strong>:</p>
+<ul>
+<li>Generates Compressed STARK proof (bytes format)</li>
+<li>Proof submitted to Aligned Batcher via SDK</li>
+<li>Must wait for Aligned aggregation before on-chain verification</li>
+</ul>
+<h3 id="verification-flow-differences"><a class="header" href="#verification-flow-differences">Verification Flow Differences</a></h3>
+<p><strong>Standard Mode</strong>:</p>
+<pre><code>Prover → ProofCoordinator → L1ProofSender → OnChainProposer.verifyBatch()
+                                                    │
+                                                    ▼
+                                          SP1Verifier/RISC0Verifier
+</code></pre>
+<p><strong>Aligned Mode</strong>:</p>
+<pre><code>Prover → ProofCoordinator → L1ProofSender → Aligned Batcher
+                                                     │
+                                                     ▼
+                                            Aligned Aggregation
+                                                     │
+                                                     ▼
+L1ProofVerifier  ←  (polls for aggregation)  ←  AlignedProofAggregatorService
+        │
+        ▼
+OnChainProposer.verifyBatchesAligned()
+        │
+        ▼
+AlignedProofAggregatorService.verifyProofInclusion()
+</code></pre>
+<hr />
+<h2 id="error-handling-1"><a class="header" href="#error-handling-1">Error Handling</a></h2>
+<h3 id="proof-sender-errors"><a class="header" href="#proof-sender-errors">Proof Sender Errors</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Error</th><th>Description</th><th>Recovery</th></tr></thead><tbody>
+<tr><td><code>AlignedGetNonceError</code></td><td>Failed to get nonce from batcher</td><td>Retry with backoff</td></tr>
+<tr><td><code>AlignedFeeEstimateError</code></td><td>Fee estimation failed</td><td>Retry all RPC URLs</td></tr>
+<tr><td><code>AlignedWrongProofFormat</code></td><td>Proof is not compressed</td><td>Re-generate proof in Aligned mode</td></tr>
+<tr><td><code>InvalidProof</code></td><td>Aligned rejected the proof</td><td>Delete proof, regenerate</td></tr>
+</tbody></table>
+</div>
+<h3 id="proof-verifier-errors"><a class="header" href="#proof-verifier-errors">Proof Verifier Errors</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Error</th><th>Description</th><th>Recovery</th></tr></thead><tbody>
+<tr><td><code>MismatchedPublicInputs</code></td><td>Proofs have different public inputs</td><td>Investigation required</td></tr>
+<tr><td><code>UnsupportedProverType</code></td><td>Prover type not supported by Aligned</td><td>Use SP1 or RISC0</td></tr>
+<tr><td><code>BeaconClient</code></td><td>Beacon URL failed</td><td>Try next beacon URL</td></tr>
+<tr><td><code>EthereumProviderError</code></td><td>RPC URL failed</td><td>Try next RPC URL</td></tr>
+</tbody></table>
+</div>
+<hr />
+<h2 id="monitoring"><a class="header" href="#monitoring">Monitoring</a></h2>
+<h3 id="key-metrics"><a class="header" href="#key-metrics">Key Metrics</a></h3>
+<ul>
+<li><code>batch_verification_gas</code>: Gas used per batch verification</li>
+<li><code>latest_sent_batch_proof</code>: Last batch proof submitted to Aligned</li>
+<li><code>last_verified_batch</code>: Last batch verified on L1</li>
+</ul>
+<h3 id="log-messages"><a class="header" href="#log-messages">Log Messages</a></h3>
+<p><strong>Proof Sender</strong>:</p>
+<pre><code>INFO ethrex_l2::sequencer::l1_proof_sender: Sending batch proof(s) to Aligned Layer batch_number=1
+INFO ethrex_l2::sequencer::l1_proof_sender: Submitted proof to Aligned prover_type=SP1 batch_number=1
+</code></pre>
+<p><strong>Proof Verifier</strong>:</p>
+<pre><code>INFO ethrex_l2::sequencer::l1_proof_verifier: Proof aggregated by Aligned batch_number=1 merkle_root=0x... commitment=0x...
+INFO ethrex_l2::sequencer::l1_proof_verifier: Batches verified in OnChainProposer, with transaction hash 0x...
+</code></pre>
+<hr />
+<h2 id="references-1"><a class="header" href="#references-1">References</a></h2>
+<ul>
+<li><a href="https://docs.alignedlayer.com/">Aligned Layer Documentation</a></li>
+<li><a href="https://docs.alignedlayer.com/guides/1.2_sdk_api_reference">Aligned SDK API Reference</a></li>
+<li><a href="https://docs.alignedlayer.com/guides/7_contract_addresses">Aligned Contract Addresses</a></li>
+<li><a href="l2/fundamentals/../deployment/aligned.html">Running Ethrex in Aligned Mode</a></li>
+<li><a href="l2/fundamentals/../deployment/overview.html">ethrex L2 Deployment Guide</a></li>
+<li><a href="l2/fundamentals/../architecture/prover.html">ethrex Prover Documentation</a></li>
+</ul>
 <div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <style>
 .mdbook-alerts {
@@ -11024,8 +12664,19 @@ A message is considered expired if a certain deadline is reached and it has not 
 <p>The Dockerfile is located at the root of the repository and can be built by running</p>
 <pre><code>docker build -t ethrex .
 </code></pre>
-<p>The <code>BUILD_FLAGS</code> argument can be used to pass flags to cargo, for example</p>
-<pre><code>docker build -t ethrex --build-arg BUILD_FLAGS="--features &lt;features&gt;" .
+<p>Build arguments:</p>
+<ul>
+<li><code>PROFILE</code>: Cargo profile to use (default: <code>release</code>). Example: <code>release-with-debug-assertions</code></li>
+<li><code>BUILD_FLAGS</code>: Additional cargo flags (features, etc.)</li>
+</ul>
+<pre><code># Custom profile
+docker build -t ethrex --build-arg PROFILE="release-with-debug-assertions" .
+
+# With features
+docker build -t ethrex --build-arg BUILD_FLAGS="--features l2" .
+
+# Both
+docker build -t ethrex --build-arg PROFILE="release-with-debug-assertions" --build-arg BUILD_FLAGS="--features l2" .
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <style>
@@ -11098,7 +12749,7 @@ A message is considered expired if a certain deadline is reached and it has not 
 <h1 id="l1-developer-docs"><a class="header" href="#l1-developer-docs">L1 Developer Docs</a></h1>
 <p>Welcome to the ethrex L1 developer documentation!</p>
 <p>This section provides information about the internals of the L1 side of the project.</p>
-<h2 id="table-of-contents"><a class="header" href="#table-of-contents">Table of contents</a></h2>
+<h2 id="table-of-contents-1"><a class="header" href="#table-of-contents-1">Table of contents</a></h2>
 <ul>
 <li><a href="developers/l1/./dev-mode.html">Dev mode</a></li>
 <li><a href="developers/l1/./kurtosis-localnet.html">Kurtosis localnet</a></li>
@@ -11958,7 +13609,7 @@ This eliminates code duplication and makes adding new database backends trivial.
 </style>
 <h1 id="testing"><a class="header" href="#testing">Testing</a></h1>
 <p>The ethrex project runs several suites of tests to ensure proper protocol implementation</p>
-<h2 id="table-of-contents-1"><a class="header" href="#table-of-contents-1">Table of contents</a></h2>
+<h2 id="table-of-contents-2"><a class="header" href="#table-of-contents-2">Table of contents</a></h2>
 <ul>
 <li><a href="developers/l1/testing/./ef-tests.html">Ethereum Foundation Tests</a></li>
 <li><a href="developers/l1/testing/./hive.html">Hive Tests</a></li>
@@ -12478,7 +14129,7 @@ make load-test-io
 <h1 id="l2-developer-docs"><a class="header" href="#l2-developer-docs">L2 Developer Docs</a></h1>
 <p>Welcome to the ethrex L2 developer documentation!</p>
 <p>This section provides information about the internals of the L2 side of the project.</p>
-<h2 id="table-of-contents-2"><a class="header" href="#table-of-contents-2">Table of contents</a></h2>
+<h2 id="table-of-contents-3"><a class="header" href="#table-of-contents-3">Table of contents</a></h2>
 <ul>
 <li><a href="developers/l2/./dev-mode.html">Dev mode</a></li>
 <li><a href="developers/l2/./integration-tests.html">Running integration tests</a></li>
@@ -13024,7 +14675,7 @@ if you get an error like <code>risc0-ethereum/contracts/../lib/forge-std/src/Scr
 </ol>
 </li>
 </ul>
-<h2 id="configuration-4"><a class="header" href="#configuration-4">Configuration</a></h2>
+<h2 id="configuration-5"><a class="header" href="#configuration-5">Configuration</a></h2>
 <p>Configuration is done through environment variables or CLI flags.
 You can see a list of available flags by passing <code>--help</code> to the CLI, or checkout <a href="developers/l2/../../CLI.html">CLI</a>.</p>
 <div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
@@ -13097,7 +14748,7 @@ You can see a list of available flags by passing <code>--help</code> to the CLI,
 </style>
 <h1 id="generate-blobs-for-the-state-reconstruction-test"><a class="header" href="#generate-blobs-for-the-state-reconstruction-test">Generate blobs for the state reconstruction test</a></h1>
 <p>The test in <code>crates/l2/tests/state_reconstruct.rs</code> replays a fixed set of blobs to reconstruct. The fixtures need to be regenerated whenever the genesis file changes, because a new genesis alters the hash of the very first block and, by extension, all descendant blocks. Our stored blobs encode parent pointers, so stale hashes make the fixtures unusable. If you ever need to regenerate those blobs, you need to change the files <code>payload_builder.rs</code> and <code>l1_committer.rs</code> and run the sequencer to capture fresh blobs.</p>
-<h2 id="summary-1"><a class="header" href="#summary-1">Summary</a></h2>
+<h2 id="summary-4"><a class="header" href="#summary-4">Summary</a></h2>
 <ol>
 <li>Limit every block to ten transactions to make the batches predictable.</li>
 <li>Store each blob locally whenever the committer submits a batch.</li>
@@ -14267,7 +15918,7 @@ Node options:
 
       --log.level &lt;LOG_LEVEL&gt;
           Possible values: info, debug, trace, warn, error
-          
+
           [env: ETHREX_LOG_LEVEL=]
           [default: INFO]
 
@@ -14283,6 +15934,9 @@ Node options:
           Maximum size of the mempool in number of transactions
 
           [default: 10000]
+
+      --precompute-witnesses
+          Once synced, computes execution witnesses upon receiving newPayload messages and stores them in local storage
 
 P2P options:
       --bootnodes &lt;BOOTNODE_LIST&gt;...
@@ -14315,14 +15969,14 @@ P2P options:
           [default: 1000]
 
       --p2p.target-peers &lt;MAX_PEERS&gt;
-           Max amount of connected peers.
- 
-           [default: 100]
- 
+          Max amount of connected peers.
+
+          [default: 100]
+
       --p2p.lookup-interval &lt;INITIAL_LOOKUP_INTERVAL&gt;
           Initial Lookup Time Interval (ms) to trigger each Discovery lookup message and RLPx connection attempt.
-          
-         [default: 100]
+
+          [default: 100]
 
 RPC options:
       --http.addr &lt;ADDRESS&gt;
@@ -14373,7 +16027,7 @@ Block building options:
       --builder.extra-data &lt;EXTRA_DATA&gt;
           Block extra data message.
 
-          [default: "ethrex 8.0.0"]
+          [default: "ethrex 9.0.0"]
 
       --builder.gas-limit &lt;GAS_LIMIT&gt;
           Target block gas limit.
@@ -14544,7 +16198,7 @@ Block building options:
       --builder.extra-data &lt;EXTRA_DATA&gt;
           Block extra data message.
 
-          [default: "ethrex 8.0.0"]
+          [default: "ethrex 9.0.0"]
 
       --builder.gas-limit &lt;GAS_LIMIT&gt;
           Target block gas limit.
